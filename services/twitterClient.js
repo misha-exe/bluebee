@@ -1,5 +1,6 @@
 const axios = require('axios');
 const fs = require('fs');
+const querystring = require('querystring');
 
 class TwitterClient {
   constructor(authToken, ct0, adsAccountId = null) {
@@ -9,7 +10,7 @@ class TwitterClient {
     this.cookieHeader = `auth_token=${this.authToken}; ct0=${this.ct0};`;
 
     this.defaultHeaders = {
-      'Authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA', // Standard Twitter Web Client Bearer
+      'Authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
       'x-csrf-token': this.ct0,
       'x-twitter-auth-type': 'OAuth2Session',
       'x-twitter-active-user': 'yes',
@@ -19,7 +20,7 @@ class TwitterClient {
   }
 
   /**
-   * Uploads MP4 video using Twitter Chunked Media Upload (INIT -> APPEND -> FINALIZE -> STATUS)
+   * Upload video via chunked upload
    */
   async uploadMediaChunked(filePath, onProgress) {
     const stat = fs.statSync(filePath);
@@ -34,14 +35,14 @@ class TwitterClient {
           command: 'INIT',
           media_type: 'video/mp4',
           total_bytes: totalBytes,
-          media_category: 'amplify_video' // Required for Amplify/Ads Media Library
+          media_category: 'amplify_video'
         },
         headers: this.defaultHeaders
       }
     );
 
     const mediaId = initRes.data.media_id_string;
-    const chunkSize = 4 * 1024 * 1024; // 4MB chunks
+    const chunkSize = 4 * 1024 * 1024;
     const fd = fs.openSync(filePath, 'r');
     let segmentIndex = 0;
     let bytesUploaded = 0;
@@ -56,7 +57,7 @@ class TwitterClient {
       form.append('command', 'APPEND');
       form.append('media_id', mediaId);
       form.append('segment_index', segmentIndex.toString());
-      form.append('media', chunk, { filename: 'blob', contentType: 'application/octet-stream' });
+      form.append('media', chunk, { filename: 'video.mp4', contentType: 'application/octet-stream' });
 
       await axios.post('https://upload.twitter.com/1.1/media/upload.json', form, {
         headers: {
@@ -68,8 +69,7 @@ class TwitterClient {
       segmentIndex++;
       bytesUploaded += bytesRead;
       if (onProgress) {
-        const percent = Math.min(99, Math.round((bytesUploaded / totalBytes) * 100));
-        onProgress(percent);
+        onProgress(Math.min(99, Math.round((bytesUploaded / totalBytes) * 100)));
       }
     }
     fs.closeSync(fd);
@@ -87,11 +87,11 @@ class TwitterClient {
       }
     );
 
-    // 4. CHECK STATUS (Transcoding)
+    // 4. STATUS check (Wait until transcode finishes)
     let processingInfo = finalizeRes.data.processing_info;
     while (processingInfo && (processingInfo.state === 'pending' || processingInfo.state === 'in_progress')) {
-      const checkAfterSecs = (processingInfo.check_after_secs || 1) * 1000;
-      await new Promise(r => setTimeout(r, checkAfterSecs));
+      const waitTime = (processingInfo.check_after_secs || 2) * 1000;
+      await new Promise(r => setTimeout(r, waitTime));
 
       const statusRes = await axios.get('https://upload.twitter.com/1.1/media/upload.json', {
         params: {
@@ -103,7 +103,7 @@ class TwitterClient {
 
       processingInfo = statusRes.data.processing_info;
       if (processingInfo && processingInfo.state === 'failed') {
-        throw new Error(processingInfo.error ? processingInfo.error.message : 'X video transcoding failed');
+        throw new Error(processingInfo.error?.message || 'X failed to process video.');
       }
     }
 
@@ -111,7 +111,7 @@ class TwitterClient {
   }
 
   /**
-   * Adds the video to the account's X Ads Media Library
+   * Add to Ads Media Library
    */
   async addToAdsMediaLibrary(mediaId, title) {
     if (!this.adsAccountId) return;
@@ -125,75 +125,102 @@ class TwitterClient {
         },
         { headers: this.defaultHeaders }
       );
-    } catch (e) {
-      // If direct Ads endpoint fails, fallback to internal metadata tagging
-      try {
-        await axios.post(
-          'https://upload.twitter.com/1.1/media/metadata/create.json',
+    } catch {
+      // Non-fatal if account permissions already manage Amplify
+    }
+  }
+
+  /**
+   * Create the Video Website Card
+   * Uses URL-encoded form data required by CAPS
+   */
+  async createVideoWebsiteCard(mediaId, websiteUrl, headline) {
+    const cardData = {
+      "twitter:card": "video_website",
+      "twitter:api:api:endpoint": "1",
+      "twitter:title": headline,
+      "twitter:website_url": websiteUrl,
+      "twitter:player:stream_content_type": "video/mp4",
+      "twitter:player": mediaId
+    };
+
+    const postBody = querystring.stringify({
+      card_data: JSON.stringify(cardData)
+    });
+
+    try {
+      // Primary: Twitter CAPS endpoint
+      const res = await axios.post('https://caps.twitter.com/v2/cards/create.json', postBody, {
+        headers: {
+          ...this.defaultHeaders,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      });
+
+      if (res.data && res.data.card_uri) {
+        return res.data.card_uri;
+      }
+    } catch (err) {
+      // Fallback: Ads Manager Cards endpoint
+      if (this.adsAccountId) {
+        const adsRes = await axios.post(
+          `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
+          querystring.stringify({
+            name: headline,
+            video_id: mediaId,
+            website_url: websiteUrl,
+            website_title: headline
+          }),
           {
-            media_id: mediaId,
-            alt_text: { text: title }
+            headers: {
+              ...this.defaultHeaders,
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          }
+        );
+        if (adsRes.data?.data?.card_uri) {
+          return adsRes.data.data.card_uri;
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Posts Tweet with attached card_uri
+   */
+  async postTweetWithCard(statusText, cardUri) {
+    // Method 1: Standard REST update endpoint (Supports card_uri with session auth)
+    try {
+      const restBody = querystring.stringify({
+        status: statusText,
+        card_uri: cardUri
+      });
+
+      const res = await axios.post('https://twitter.com/i/api/1.1/statuses/update.json', restBody, {
+        headers: {
+          ...this.defaultHeaders,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      });
+      return res.data;
+    } catch (restErr) {
+      // Method 2: Ads account organic tweet endpoint fallback
+      if (this.adsAccountId) {
+        const adsTweetRes = await axios.post(
+          `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/tweet`,
+          {
+            as_user_id: null,
+            text: statusText,
+            card_uri: cardUri,
+            nullcast: false
           },
           { headers: this.defaultHeaders }
         );
-      } catch (err) {
-        console.warn('Metadata assignment notice:', err.message);
+        return adsTweetRes.data;
       }
+      throw restErr;
     }
-  }
-
-  /**
-   * Creates the Video Website Card returning card_uri (e.g., "card://1892837492837492834")
-   */
-  async createVideoWebsiteCard(mediaId, websiteUrl, headline) {
-    // Twitter Card Platform Endpoint (CAPS v2)
-    const payload = {
-      card_data: JSON.stringify({
-        "twitter:card": "video_website",
-        "twitter:api:api:endpoint": "1",
-        "twitter:title": headline,
-        "twitter:website_url": websiteUrl,
-        "twitter:player:stream_content_type": "video/mp4",
-        "twitter:player": mediaId
-      })
-    };
-
-    const res = await axios.post('https://caps.twitter.com/v2/cards/create.json', null, {
-      params: payload,
-      headers: this.defaultHeaders
-    });
-
-    if (res.data && res.data.card_uri) {
-      return res.data.card_uri;
-    }
-
-    throw new Error('Could not generate card URI from Twitter');
-  }
-
-  /**
-   * Posts the tweet with the attached card_uri (causing autoplay and the website card view)
-   */
-  async postTweetWithCard(statusText, cardUri) {
-    // Internal GraphQL Tweet creation endpoint
-    const queryId = 'SoVnRxHkVoiZ2-q371Bs4w'; // CreateTweet mutation query ID
-    const url = `https://x.com/i/api/graphql/${queryId}/CreateTweet`;
-
-    const body = {
-      variables: {
-        tweet_text: statusText,
-        card_uri: cardUri,
-        nullcast: false
-      },
-      features: {
-        interactive_text: true,
-        responsive_web_text_conversations_enabled: false,
-        tweetypie_unmention_optimization_enabled: true,
-        vibe_api_enabled: true
-      }
-    };
-
-    const res = await axios.post(url, body, { headers: this.defaultHeaders });
-    return res.data;
   }
 }
 
