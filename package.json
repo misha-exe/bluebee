@@ -1,10 +1,8 @@
 {
   "name": "share2x-website-card-publisher",
   "version": "1.0.0",
-  "description": "Share2X clone: 800x800 Video Website Card creator and publisher for X",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
+  "engines": {
+    "node": "20.x"
   },
   "dependencies": {
     "axios": "^1.6.8",
