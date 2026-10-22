@@ -53,7 +53,7 @@ function sendProgress(clientId, status, percent = 0) {
   }
 }
 
-// URL Upload Route (Best for Vercel)
+// URL Upload Route
 app.post('/api/upload-url', async (req, res) => {
   const { videoUrl, clientId } = req.body;
   if (!videoUrl) return res.status(400).json({ error: 'Missing video URL' });
@@ -97,7 +97,6 @@ app.post('/api/upload-url', async (req, res) => {
 
     sendProgress(clientId, 'Video added to the Ads Media Library and selected', 100);
 
-    // Read generated thumbnail as a base64 Data URL because /tmp is ephemeral
     const thumbBase64 = `data:image/jpeg;base64,${fs.readFileSync(thumbPath).toString('base64')}`;
 
     const newMedia = {
@@ -110,7 +109,6 @@ app.post('/api/upload-url', async (req, res) => {
 
     mediaLibrary.unshift(newMedia);
 
-    // Cleanup /tmp
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
 
     return res.json({ success: true, media: newMedia });
@@ -174,37 +172,61 @@ app.post('/api/upload-file', upload.single('video'), async (req, res) => {
   }
 });
 
-// Library List
+// Media Library List
 app.get('/api/media', (req, res) => res.json(mediaLibrary));
 
-// Post Tweet Card
+// Post Tweet with Video Website Card
 app.post('/api/publish', async (req, res) => {
   const { postText, websiteUrl, headline, mediaId } = req.body;
   const authToken = process.env.TWITTER_AUTH_TOKEN;
   const ct0 = process.env.TWITTER_CT0;
+  const adsAccountId = process.env.TWITTER_ADS_ACCOUNT_ID;
+
+  if (!websiteUrl || !headline || !mediaId) {
+    return res.status(400).json({ error: 'Missing required fields: websiteUrl, headline, or mediaId.' });
+  }
 
   if (!authToken || !ct0) {
     return res.json({
       success: true,
       simulated: true,
-      message: 'Card validated and posted in test mode. (Supply TWITTER_AUTH_TOKEN & TWITTER_CT0 in Vercel Environment Variables to publish live).'
+      message: 'Card validated in test mode. Set TWITTER_AUTH_TOKEN and TWITTER_CT0 in Vercel to post live.'
     });
   }
 
   try {
-    const client = new TwitterClient(authToken, ct0, process.env.TWITTER_ADS_ACCOUNT_ID);
+    const client = new TwitterClient(authToken, ct0, adsAccountId);
+
+    console.log(`[Publish] Creating Video Website Card for media: ${mediaId}`);
     const cardUri = await client.createVideoWebsiteCard(mediaId, websiteUrl, headline);
-    const result = await client.postTweetWithCard(postText, cardUri);
-    return res.json({ success: true, result });
+    console.log(`[Publish] Card generated: ${cardUri}`);
+
+    console.log(`[Publish] Posting tweet with card_uri...`);
+    const result = await client.postTweetWithCard(postText || '', cardUri);
+    console.log(`[Publish] Successfully posted!`);
+
+    return res.json({ success: true, cardUri, result });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    const twitterError = err.response?.data;
+    console.error('[Publish Error]', JSON.stringify(twitterError || err.message, null, 2));
+
+    const errorMessage =
+      twitterError?.errors?.[0]?.message ||
+      twitterError?.error ||
+      err.response?.statusText ||
+      err.message;
+
+    return res.status(err.response?.status || 500).json({
+      error: `Twitter API Error: ${errorMessage}`,
+      details: twitterError
+    });
   }
 });
 
-// If running locally, listen; on Vercel, export the app
+// Run locally if not on Vercel
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`Local dev server on port ${PORT}`));
+  app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
 }
 
 module.exports = app;
