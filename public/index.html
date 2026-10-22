@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Composer · Share2X</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="dashboard-body">
+  <div class="app-frame">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar" aria-hidden="true">
+      <div class="sidebar-brand">
+        <a href="/"><span><strong>Share2X</strong></span></a>
+        <button type="button" class="sidebar-close" id="sidebarClose" aria-label="Close navigation">×</button>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <span>Workspace</span>
+          <a href="/"><b class="nav-icon">⌂</b>Dashboard</a>
+          <a class="active" href="/"><b class="nav-icon">＋</b>Composer</a>
+          <a href="#"><b class="nav-icon">≡</b>Posts</a>
+        </div>
+      </nav>
+      <div class="sidebar-user">
+        <div class="user-avatar">R</div>
+        <div>
+          <strong>Rudith</strong>
+          <small>Editor</small>
+        </div>
+        <a href="#" title="Log out">↗</a>
+      </div>
+    </aside>
+
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Main Content -->
+    <div class="main-column">
+      <button type="button" class="menu-toggle floating-menu" id="menuToggle" aria-label="Open navigation">☰</button>
+      <main class="content-shell">
+        <section class="page-head">
+          <div>
+            <h1>Create Website Card</h1>
+            <p>Select a compatible video, add the destination details, then publish it.</p>
+          </div>
+        </section>
+
+        <div class="composer" id="composer">
+          <!-- Form Panel -->
+          <section class="panel form-panel">
+            <label>X Ads account
+              <select id="accountSelect">
+                <option value="37">Rudith✨ · 18ce55xmjw6</option>
+              </select>
+            </label>
+
+            <div class="destination">
+              <span class="check">✓</span>
+              <div>
+                <strong>Website</strong>
+                <small>Send viewers to an HTTPS destination.</small>
+              </div>
+            </div>
+
+            <label>Post text <span class="counter" id="postCount">0/280</span>
+              <textarea id="postText" maxlength="280" placeholder="What do you want to say?"></textarea>
+            </label>
+
+            <label>Website URL
+              <input id="websiteUrl" type="url" placeholder="https://hai8g.com">
+            </label>
+
+            <label>Headline <span class="counter" id="headlineCount">0/70</span>
+              <input id="headline" maxlength="70" placeholder="Watch full video 👇">
+            </label>
+
+            <div class="selected-head">
+              <strong>Selected media</strong>
+              <span id="selectedCount">None selected</span>
+            </div>
+            
+            <div id="selectedMedia" class="selected-media">
+              <p>Select one compatible square video.</p>
+            </div>
+
+            <button class="button publish" id="publishBtn" disabled>Post Website Card</button>
+            <p class="publish-note" id="publishNote">Organic Website Card posts use the X web session for this account.</p>
+          </section>
+
+          <!-- Library Panel -->
+          <section class="panel library-panel">
+            <div class="library-head">
+              <div>
+                <span class="eyebrow">X Ads assets</span>
+                <h2>Media Library</h2>
+              </div>
+              <button class="button secondary" id="refreshBtn">Refresh</button>
+            </div>
+
+            <div class="upload-panel">
+              <label for="videoFile">Upload video to this Ads account</label>
+              <div class="upload-controls">
+                <input id="videoFile" type="file" accept=".mp4,.mov,video/mp4,video/quicktime">
+                <button type="button" class="button secondary" id="uploadVideoBtn">Upload file</button>
+              </div>
+
+              <div class="upload-or"><span>or use a direct URL</span></div>
+
+              <div class="upload-controls">
+                <input id="videoUrl" type="url" placeholder="https://cdn.example.com/video.mp4">
+                <button type="button" class="button secondary" id="uploadUrlBtn">Upload URL</button>
+              </div>
+
+              <progress id="uploadProgress" max="100" value="0" hidden></progress>
+              <p id="uploadStatus" aria-live="polite">MP4 or MOV · source files up to 2 GB · automatically prepared for X’s 1 GB final limit</p>
+            </div>
+
+            <div class="search">
+              <input id="mediaSearch" placeholder="Search media…">
+              <button class="button secondary" id="searchBtn">Search</button>
+            </div>
+
+            <div id="mediaGrid" class="media-grid"></div>
+            <button class="button secondary load-more" id="loadMoreBtn" hidden>Load more</button>
+          </section>
+        </div>
+
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </main>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
