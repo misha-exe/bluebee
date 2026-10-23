@@ -1,5 +1,61 @@
 const axios = require('axios');
 const fs = require('fs');
+const path = require('path');
+const Module = require('module');
+
+/**
+ * Locate an installed package directory by walking the node_modules
+ * resolution paths from the app root and from this file's location.
+ */
+function findPackageDir(name) {
+  const searchFrom = [process.cwd(), __dirname];
+  for (const from of searchFrom) {
+    for (const nmDir of Module._nodeModulePaths(from)) {
+      const dir = path.join(nmDir, name);
+      try {
+        if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+/**
+ * Read the CreateTweet queryId straight out of the installed
+ * agent-twitter-client package. The package maintainers keep the ID
+ * current with each release, so this is the most reliable source and
+ * requires no scraping at all.
+ */
+function getQueryIdFromAgentTwitterClient() {
+  try {
+    const dir = findPackageDir('agent-twitter-client');
+    if (!dir) return { id: null, note: 'agent-twitter-client not found in node_modules' };
+
+    const files = [];
+    const walk = (d, depth) => {
+      if (depth > 3) return;
+      for (const f of fs.readdirSync(d)) {
+        const p = path.join(d, f);
+        let st;
+        try { st = fs.statSync(p); } catch { continue; }
+        if (st.isDirectory() && f !== 'node_modules') walk(p, depth + 1);
+        else if (st.isFile() && f.endsWith('.js') && st.size < 5 * 1024 * 1024) files.push(p);
+      }
+    };
+    walk(dir, 0);
+
+    for (const file of files) {
+      const code = fs.readFileSync(file, 'utf8');
+      let m = code.match(/graphql\/([a-zA-Z0-9_-]{10,})\/CreateTweet/);
+      if (!m) m = code.match(/CreateTweet\w*QueryId\s*[:=]\s*['"]([a-zA-Z0-9_-]{10,})['"]/i);
+      if (!m) m = code.match(/['"]([a-zA-Z0-9_-]{10,})['"]\s*,?\s*\/\* CreateTweet \*\//i);
+      if (m) return { id: m[1], note: `extracted from ${path.relative(dir, file)}` };
+    }
+    return { id: null, note: 'package found but no CreateTweet queryId matched inside it' };
+  } catch (e) {
+    return { id: null, note: `package scan error: ${e.message}` };
+  }
+}
 
 class TwitterClient {
   constructor(authToken, ct0, adsAccountId) {
@@ -19,20 +75,37 @@ class TwitterClient {
       'Referer': 'https://x.com/',
       'Cookie': this.cookieHeader
     };
+
+    this._scrapeNote = 'not attempted';
   }
 
   /**
-   * Dynamically fetches the exact current CreateTweet query ID from live X client bundles.
-   * Returns null (instead of a stale hardcoded ID) when scraping fails, so the caller
-   * can raise a clear error instead of hitting a guaranteed 404.
+   * Resolve the current CreateTweet queryId, in order of reliability:
+   *   1. the installed agent-twitter-client package (offline, maintained)
+   *   2. a live scrape of X's client bundles
+   * Returns null on total failure and fills this._scrapeNote with why.
+   */
+  async resolveCreateTweetQueryId() {
+    const pkg = getQueryIdFromAgentTwitterClient();
+    if (pkg.id) {
+      console.log(`[GraphQL] CreateTweet queryId from agent-twitter-client (${pkg.note}): ${pkg.id}`);
+      return pkg.id;
+    }
+    console.warn(`[GraphQL] agent-twitter-client scan failed: ${pkg.note}`);
+
+    const scraped = await this.getLiveCreateTweetQueryId();
+    if (scraped) return scraped;
+
+    return null;
+  }
+
+  /**
+   * Fallback: scrape the queryId from live X client bundles.
    */
   async getLiveCreateTweetQueryId() {
     const patterns = [
-      // modern minified: {queryId:"...",operationName:"CreateTweet",...}
       /queryId\s*:\s*"([a-zA-Z0-9_-]{10,})"\s*,\s*operationName\s*:\s*"CreateTweet"/,
-      // reversed field order
       /operationName\s*:\s*"CreateTweet"[\s\S]{0,200}?queryId\s*:\s*"([a-zA-Z0-9_-]{10,})"/,
-      // JSON-ish (unminified / source maps)
       /"queryId"\s*:\s*"([a-zA-Z0-9_-]{10,})"\s*,\s*"operationName"\s*:\s*"CreateTweet"/,
       /"operationName"\s*:\s*"CreateTweet"[\s\S]{0,200}?"queryId"\s*:\s*"([a-zA-Z0-9_-]{10,})"/
     ];
@@ -40,30 +113,41 @@ class TwitterClient {
     try {
       const homeRes = await axios.get('https://x.com', {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9'
         },
-        timeout: 20000
+        timeout: 20000,
+        validateStatus: () => true
       });
+
+      if (homeRes.status !== 200) {
+        this._scrapeNote = `homepage returned HTTP ${homeRes.status}`;
+        return null;
+      }
 
       const html = homeRes.data;
       const bundleUrls = new Set();
 
-      // Absolute bundle URLs (https://abs.twimg.com/responsive-web/client-web/...)
       (html.match(/https:\/\/[^"'<>\s]+?\.js/g) || []).forEach(u => {
         if (u.includes('client-web')) bundleUrls.add(u);
       });
-
-      // Relative bundle URLs -> resolve against the CDN host
       (html.match(/\/[^"'<>\s]+?client-web[^"'<>\s]+?\.js/g) || []).forEach(rel => {
         bundleUrls.add('https://abs.twimg.com' + rel);
       });
 
-      // Search the main bundle first (it almost always holds the tweet mutations)
+      if (bundleUrls.size === 0) {
+        this._scrapeNote = `homepage loaded (${html.length} chars) but no client-web bundles matched — likely a JS-challenge page`;
+        return null;
+      }
+
       const ordered = [...bundleUrls].sort(
         (a, b) => Number(/main\./.test(b)) - Number(/main\./.test(a))
       );
 
+      let searched = 0;
       for (const url of ordered.slice(0, 40)) {
+        searched++;
         try {
           const jsRes = await axios.get(url, { responseType: 'text', timeout: 25000 });
           for (const re of patterns) {
@@ -74,12 +158,12 @@ class TwitterClient {
             }
           }
         } catch {
-          // bundle unreachable or timed out -> try the next one
+          // bundle unreachable -> try the next one
         }
       }
-      console.warn('[GraphQL] CreateTweet queryId not found in any client bundle.');
+      this._scrapeNote = `searched ${searched} bundles, no CreateTweet queryId matched`;
     } catch (e) {
-      console.warn('[GraphQL] Bundle scrape failed:', e.message);
+      this._scrapeNote = `scrape error: ${e.message}`;
     }
     return null;
   }
@@ -203,6 +287,7 @@ class TwitterClient {
       : `${headline}\n${websiteUrl}`;
 
     // 1. Try via agent-twitter-client first
+    let agentNote = 'not attempted';
     try {
       const { Scraper } = await import('agent-twitter-client');
       const scraper = new Scraper();
@@ -212,7 +297,6 @@ class TwitterClient {
       ]);
 
       const res = await scraper.sendTweet(formattedText);
-      // Newer versions resolve with the parsed payload; older ones with a fetch Response
       const data = (res && typeof res.json === 'function')
         ? await res.json().catch(() => null)
         : res;
@@ -221,17 +305,21 @@ class TwitterClient {
       if (postId) {
         return { success: true, postId };
       }
+      agentNote = 'responded without a postId';
       console.warn('[agent-twitter-client] responded without a postId — falling back to direct GraphQL.');
     } catch (agentErr) {
+      agentNote = agentErr.message;
       console.warn('[agent-twitter-client] attempt failed — falling back to direct GraphQL:', agentErr.message);
     }
 
-    // 2. Direct GraphQL using a live-scraped queryId
-    const queryId = await this.getLiveCreateTweetQueryId();
+    // 2. Direct GraphQL using the best available queryId
+    const queryId = await this.resolveCreateTweetQueryId();
     if (!queryId) {
       throw new Error(
-        'Could not resolve a live CreateTweet queryId from X client bundles. ' +
-        'X has likely changed its frontend layout — re-scrape or update the client.'
+        'Could not resolve a live CreateTweet queryId. ' +
+        `agent-twitter-client: ${agentNote}. ` +
+        `Bundle scrape: ${this._scrapeNote}. ` +
+        'Run "npm install agent-twitter-client@latest" and retry; if the problem persists, X may be blocking this server\'s IP.'
       );
     }
 
@@ -302,8 +390,7 @@ class TwitterClient {
         const status = e.response?.status;
         const body = JSON.stringify(e.response?.data || e.message).slice(0, 300);
         console.warn(`[GraphQL] CreateTweet via ${host} failed: HTTP ${status || 'n/a'} — ${body}`);
-        // A real auth/validation failure won't be fixed by switching hosts; stop early.
-        if (status && status !== 404) break;
+        if (status && status !== 404) break; // auth/validation errors won't be fixed by switching hosts
       }
     }
 
