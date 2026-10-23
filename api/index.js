@@ -159,46 +159,26 @@ router.post('/publish', async (req, res) => {
   }
 
   const client = new TwitterClient(authToken, ct0, adsAccountId);
-  let cardUri = null;
 
-  // Step 1: Create Card URI
   try {
-    cardUri = await client.createVideoWebsiteCard(mediaId, websiteUrl, headline);
-    console.log(`[Publish] Card generated: ${cardUri}`);
-  } catch (cardErr) {
-    const errorDetails = cardErr.response?.data?.errors?.[0]?.message || cardErr.message;
-    return res.status(500).json({
-      error: `Card Creation Failed: ${errorDetails}`
-    });
-  }
+    console.log(`[Publish] Posting 800x800 autoplay video with headline and destination link...`);
+    const result = await client.postTweet(postText, mediaId, websiteUrl, headline);
 
-  // Step 2: Post Tweet using X Web Session
-  try {
-    const result = await client.postTweetWithCard(postText, cardUri);
-
-    if (result.postId) {
-      return res.json({
-        success: true,
-        cardUri: cardUri,
-        postId: result.postId,
-        message: `X created the Website Card post. View post: https://x.com/i/status/${result.postId}`
-      });
-    }
-
+    console.log(`[Publish] Successfully posted! Post ID: ${result.postId}`);
     return res.json({
       success: true,
-      cardUri: cardUri,
-      message: `X web did not return a post ID. Check the X timeline before retrying to avoid a duplicate. Card URI: ${cardUri}`
+      postId: result.postId,
+      message: `X created the Website Card post. View post: https://x.com/i/status/${result.postId}`
     });
   } catch (postErr) {
     const errObj = postErr.response?.data?.errors?.[0];
     const code = errObj?.code || postErr.response?.status || 'Unknown';
     const message = errObj?.message || postErr.message;
 
-    // Exact Share2X notification format:
+    // Exact Share2X notification formatting
     return res.status(400).json({
-      error: `Authorization: ${message} (${code}) The Card was created, but no post was confirmed. Check the X timeline before retrying. Card URI: ${cardUri}`,
-      cardUri: cardUri
+      error: `Authorization: ${message} (${code}) The post could not be confirmed. Check your X timeline before retrying.`,
+      details: postErr.response?.data
     });
   }
 });
