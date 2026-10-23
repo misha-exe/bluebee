@@ -161,21 +161,20 @@ router.post('/publish', async (req, res) => {
   const client = new TwitterClient(authToken, ct0, adsAccountId);
 
   try {
-    console.log(`[Publish] Posting 800x800 autoplay video with headline and destination link...`);
+    console.log(`[Publish] Posting 800x800 square video with headline & destination link...`);
     const result = await client.postTweet(postText, mediaId, websiteUrl, headline);
 
-    console.log(`[Publish] Successfully posted! Post ID: ${result.postId}`);
+    const postId = result.postId || 'posted';
     return res.json({
       success: true,
-      postId: result.postId,
-      message: `X created the Website Card post. View post: https://x.com/i/status/${result.postId}`
+      postId: postId,
+      message: `X created the Website Card post. View post: https://x.com/i/status/${postId}`
     });
   } catch (postErr) {
     const errObj = postErr.response?.data?.errors?.[0];
     const code = errObj?.code || postErr.response?.status || 'Unknown';
     const message = errObj?.message || postErr.message;
 
-    // Exact Share2X notification formatting
     return res.status(400).json({
       error: `Authorization: ${message} (${code}) The post could not be confirmed. Check your X timeline before retrying.`,
       details: postErr.response?.data
