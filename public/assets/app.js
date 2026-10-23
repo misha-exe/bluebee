@@ -26,16 +26,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const sidebarClose = document.getElementById('sidebarClose');
   const sidebarOverlay = document.getElementById('sidebarOverlay');
 
-  // Helper to parse responses safely without throwing "Unexpected token <"
+  // Load from local database cache first
+  try {
+    const cached = localStorage.getItem('share2x_db_media');
+    if (cached) {
+      mediaList = JSON.parse(cached);
+      renderMediaGrid();
+    }
+  } catch {}
+
   async function parseResponse(res) {
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Server error occurred');
+      if (!res.ok) throw new Error(data.error || 'Server error');
       return data;
     }
     const htmlText = await res.text();
-    throw new Error(`Server returned status ${res.status}: ${htmlText.replace(/<[^>]*>/g, '').trim().substring(0, 120)}`);
+    throw new Error(`Server status ${res.status}: ${htmlText.replace(/<[^>]*>/g, '').trim().substring(0, 100)}`);
   }
 
   // SSE setup
@@ -75,24 +83,39 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadMedia() {
     try {
       const res = await fetch('/api/media');
-      mediaList = await parseResponse(res);
+      const serverMedia = await parseResponse(res);
+      
+      // Merge server media with local items, avoiding duplicates
+      const seen = new Set();
+      const merged = [];
+
+      [...mediaList, ...serverMedia].forEach(item => {
+        if (!seen.has(item.mediaId)) {
+          seen.add(item.mediaId);
+          merged.push(item);
+        }
+      });
+
+      mediaList = merged;
+      localStorage.setItem('share2x_db_media', JSON.stringify(mediaList));
       renderMediaGrid();
     } catch (err) {
-      console.warn('Failed to load media:', err.message);
+      console.warn('Could not sync media from backend:', err.message);
     }
   }
 
   function renderMediaGrid() {
     mediaGrid.innerHTML = '';
-    mediaList.forEach((item) => {
+    mediaList.forEach((item, index) => {
       const btn = document.createElement('button');
-      btn.className = `media-card ${selectedMediaItem && selectedMediaItem.id === item.id ? 'selected' : ''}`;
+      btn.className = `media-card ${selectedMediaItem && selectedMediaItem.mediaId === item.mediaId ? 'selected' : ''}`;
+      btn.setAttribute('data-i', item.id || index);
       btn.innerHTML = `
         <img src="${item.thumbnail}" alt="${item.name}">
         <span class="play">▶</span>
         <span class="media-meta">
           <strong>${item.name}</strong>
-          <small>${item.meta}</small>
+          <small>${item.meta || 'Square · 800x800'}</small>
         </span>
       `;
       btn.addEventListener('click', () => selectMedia(item));
@@ -107,7 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <img src="${item.thumbnail}" alt="${item.name}">
       <div>
         <strong>${item.name}</strong>
-        <small>${item.meta}</small>
+        <small>${item.meta || 'Square · 800x800'}</small>
       </div>
       <button type="button" id="clearSelected">×</button>
     `;
@@ -137,8 +160,14 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({ videoUrl: url, clientId })
       });
       const data = await parseResponse(res);
+
+      // Prepend newly uploaded item directly to memory and local storage
+      mediaList.unshift(data.media);
+      localStorage.setItem('share2x_db_media', JSON.stringify(mediaList));
+      renderMediaGrid();
+
+      // Auto-select the newly added video
       selectMedia(data.media);
-      loadMedia();
       showToast('Video added to the Ads Media Library and selected');
     } catch (err) {
       showToast(err.message, true);
@@ -148,7 +177,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Direct File Upload
   uploadVideoBtn.addEventListener('click', async () => {
     if (!videoFile.files[0]) return showToast('Select a video file to upload', true);
-    
+
     const formData = new FormData();
     formData.append('video', videoFile.files[0]);
     formData.append('clientId', clientId);
@@ -160,8 +189,12 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/upload-file', { method: 'POST', body: formData });
       const data = await parseResponse(res);
+
+      mediaList.unshift(data.media);
+      localStorage.setItem('share2x_db_media', JSON.stringify(mediaList));
+      renderMediaGrid();
+
       selectMedia(data.media);
-      loadMedia();
       showToast('Video added to the Ads Media Library and selected');
     } catch (err) {
       showToast(err.message, true);
