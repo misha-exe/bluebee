@@ -2,6 +2,15 @@ const axios = require('axios');
 const fs = require('fs');
 const querystring = require('querystring');
 
+// Active Twitter Web GraphQL Query IDs for CreateTweet
+const CREATE_TWEET_QUERY_IDS = [
+  'a1p9RWpkYKBjWv_I3WzS-A',
+  '5V_dkq1kcR8zyTUhRB4RhA',
+  'xT380ap0xMQeTnzBfjt9Aw',
+  'tQ4GnhUfqd1F8k0u1k7e7Q',
+  'SoVnRxHkVoiZ2-q371Bs4w'
+];
+
 class TwitterClient {
   constructor(authToken, ct0, adsAccountId) {
     this.authToken = (authToken || '').trim();
@@ -20,31 +29,13 @@ class TwitterClient {
   }
 
   /**
-   * Initializes agent-twitter-client with cookies
-   */
-  async getAgentScraper() {
-    try {
-      const { Scraper } = await import('agent-twitter-client');
-      const scraper = new Scraper();
-      await scraper.setCookies([
-        `auth_token=${this.authToken}; Domain=.twitter.com; Path=/; Secure; HttpOnly`,
-        `ct0=${this.ct0}; Domain=.twitter.com; Path=/; Secure`
-      ]);
-      return scraper;
-    } catch (err) {
-      console.warn('[agent-twitter-client init]', err.message);
-      return null;
-    }
-  }
-
-  /**
-   * Upload video using tweet_video (Allowed for cards and timeline autoplay)
+   * Upload video via Twitter Chunked Media Upload
    */
   async uploadMediaChunked(filePath, onProgress) {
     const stat = fs.statSync(filePath);
     const totalBytes = stat.size;
 
-    // 1. INIT - tweet_video avoids the 131 Amplify restriction
+    // 1. INIT with tweet_video
     const initRes = await axios.post(
       'https://upload.twitter.com/1.1/media/upload.json',
       null,
@@ -102,7 +93,7 @@ class TwitterClient {
       }
     );
 
-    // 4. STATUS check
+    // 4. STATUS check (Wait for transcode completion)
     let processingInfo = finalizeRes.data.processing_info;
     while (processingInfo && (processingInfo.state === 'pending' || processingInfo.state === 'in_progress')) {
       const waitTime = (processingInfo.check_after_secs || 2) * 1000;
@@ -149,7 +140,6 @@ class TwitterClient {
    * Create the Video Website Card URI
    */
   async createVideoWebsiteCard(mediaId, websiteUrl, headline) {
-    // Attempt via CAPS with tweet_video
     const cardData = {
       "twitter:card": "video_website",
       "twitter:api:api:endpoint": "1",
@@ -174,55 +164,26 @@ class TwitterClient {
         return capsRes.data.card_uri;
       }
     } catch (e) {
-      console.warn('[CAPS Notice]', e.response?.data || e.message);
+      console.warn('[CAPS Notice]', e.message);
     }
 
-    return null; // Return null so publisher uses direct card-tweet engine
+    return null;
   }
 
   /**
    * Post organic tweet with Video Website Card
-   * Uses card_uri if available; otherwise uses agent-twitter-client with native video attachment
+   * Iterates through active query IDs to prevent 404 Not Found
    */
   async postTweetWithCard(statusText, cardUri, mediaId, websiteUrl, headline) {
-    // 1. If cardUri was generated, post via Ads Organic Tweet or GraphQL
-    if (cardUri) {
-      try {
-        const adsRes = await axios.post(
-          `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/tweet`,
-          querystring.stringify({
-            as_user_id: null,
-            text: statusText || '',
-            card_uri: cardUri,
-            nullcast: false
-          }),
-          {
-            headers: {
-              ...this.defaultHeaders,
-              'Content-Type': 'application/x-www-form-urlencoded'
-            }
-          }
-        );
-        return adsRes.data;
-      } catch (err) {
-        console.warn('[Ads Tweet endpoint notice]', err.message);
-      }
-    }
-
-    // 2. Direct GraphQL / agent-twitter-client posting
-    // Injects the 800x800 square video with autoplay and attaches the destination card
-    const queryId = 'SoVnRxHkVoiZ2-q371Bs4w';
-    const graphqlUrl = `https://x.com/i/api/graphql/${queryId}/CreateTweet`;
-
-    const tweetText = statusText 
-      ? `${statusText}\n\n${headline}\n${websiteUrl}` 
+    const tweetText = statusText
+      ? `${statusText}\n\n${headline}\n${websiteUrl}`
       : `${headline}\n${websiteUrl}`;
 
     const graphqlPayload = {
       variables: {
         tweet_text: tweetText,
         media: {
-          media_entities: [{ media_id: mediaId }],
+          media_entities: [{ media_id: mediaId, tagged_users: [] }],
           possibly_sensitive: false
         },
         nullcast: false
@@ -231,7 +192,12 @@ class TwitterClient {
         interactive_text: true,
         responsive_web_text_conversations_enabled: false,
         tweetypie_unmention_optimization_enabled: true,
-        vibe_api_enabled: true
+        vibe_api_enabled: true,
+        responsive_web_graphql_exclude_directive_enabled: true,
+        verified_phone_label_enabled: false,
+        standardized_nudges_misinfo: true,
+        tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+        rweb_video_timestamps_enabled: true
       }
     };
 
@@ -239,22 +205,33 @@ class TwitterClient {
       graphqlPayload.variables.card_uri = cardUri;
     }
 
-    try {
-      const gqlRes = await axios.post(graphqlUrl, graphqlPayload, {
-        headers: {
-          ...this.defaultHeaders,
-          'Content-Type': 'application/json'
+    let lastError = null;
+
+    // Try each active queryId until one succeeds
+    for (const qId of CREATE_TWEET_QUERY_IDS) {
+      try {
+        const url = `https://x.com/i/api/graphql/${qId}/CreateTweet`;
+        const res = await axios.post(url, graphqlPayload, {
+          headers: {
+            ...this.defaultHeaders,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (res.data?.data?.create_tweet || res.data?.data?.create_tweet_v2) {
+          return res.data;
         }
-      });
-      return gqlRes.data;
-    } catch (gqlErr) {
-      // 3. Fallback to agent-twitter-client
-      const scraper = await this.getAgentScraper();
-      if (scraper) {
-        return await scraper.sendTweet(tweetText);
+      } catch (err) {
+        lastError = err;
+        // If 404, continue to next queryId in the pool
+        if (err.response?.status === 404) {
+          continue;
+        }
+        throw err;
       }
-      throw gqlErr;
     }
+
+    throw lastError || new Error('Could not publish tweet to X timeline.');
   }
 }
 
