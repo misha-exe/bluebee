@@ -98,7 +98,7 @@ class TwitterClient {
       }
     );
 
-    // 4. STATUS check (Wait until video transcoding finishes)
+    // 4. STATUS check
     let processingInfo = finalizeRes.data.processing_info;
     while (processingInfo && (processingInfo.state === 'pending' || processingInfo.state === 'in_progress')) {
       const waitTime = (processingInfo.check_after_secs || 2) * 1000;
@@ -119,22 +119,22 @@ class TwitterClient {
   }
 
   /**
-   * Save video to Ads Media Library
+   * Add video to Ads Media Library
    */
   async addToAdsMediaLibrary(mediaId, title) {
     if (!this.adsAccountId) return;
     try {
       await axios.post(
-        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/media_library`,
-        querystring.stringify({
+        `https://ads.twitter.com/accounts/${this.adsAccountId}/media_library`,
+        {
           media_id: mediaId,
           name: title,
           media_type: 'VIDEO'
-        }),
+        },
         {
           headers: {
             ...this.defaultHeaders,
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'Content-Type': 'application/json'
           }
         }
       );
@@ -149,17 +149,14 @@ class TwitterClient {
   async createVideoWebsiteCard(mediaId, websiteUrl, headline) {
     const errorLogs = [];
 
-    // Attempt 1: Twitter Card Platform (CAPS) with promo_video_website
+    // Attempt 1: Twitter Card Platform (CAPS) with native "twitter:video:id"
     try {
       const cardData = {
-        "twitter:card": "promo_video_website",
+        "twitter:card": "video_website",
         "twitter:api:api:endpoint": "1",
         "twitter:title": headline,
         "twitter:website_url": websiteUrl,
-        "twitter:player": mediaId,
-        "twitter:player:width": 800,
-        "twitter:player:height": 800,
-        "twitter:player:stream_content_type": "video/mp4"
+        "twitter:video:id": mediaId
       };
 
       const capsRes = await axios.post(
@@ -173,43 +170,16 @@ class TwitterClient {
         }
       );
 
-      if (capsRes.data?.card_uri) {
-        return capsRes.data.card_uri;
-      }
+      const cardUri = capsRes.data?.card_uri;
+      if (cardUri) return cardUri;
     } catch (capsErr) {
-      const msg = capsErr.response?.data?.errors?.[0]?.message || capsErr.response?.data || capsErr.message;
-      errorLogs.push(`CAPS promo_video_website: ${JSON.stringify(msg)}`);
+      errorLogs.push(`CAPS: ${capsErr.response?.data?.errors?.[0]?.message || capsErr.message}`);
     }
 
-    // Attempt 2: Ads Manager Web API (URL-encoded)
+    // Attempt 2: Internal Ads Manager Card Endpoint
     try {
       const adsRes = await axios.post(
-        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
-        querystring.stringify({
-          name: headline,
-          video_id: mediaId,
-          website_url: websiteUrl,
-          website_title: headline
-        }),
-        {
-          headers: {
-            ...this.defaultHeaders,
-            'Content-Type': 'application/x-www-form-urlencoded'
-          }
-        }
-      );
-
-      const cardUri = adsRes.data?.data?.card_uri || adsRes.data?.card_uri;
-      if (cardUri) return cardUri;
-    } catch (adsErr) {
-      const msg = adsErr.response?.data?.errors?.[0]?.message || adsErr.response?.data || adsErr.message;
-      errorLogs.push(`Ads API form-encoded: ${JSON.stringify(msg)}`);
-    }
-
-    // Attempt 3: Ads Manager Web API (JSON)
-    try {
-      const adsJsonRes = await axios.post(
-        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
+        `https://ads.twitter.com/accounts/${this.adsAccountId}/cards/video_website`,
         {
           name: headline,
           video_id: mediaId,
@@ -224,35 +194,57 @@ class TwitterClient {
         }
       );
 
-      const cardUri = adsJsonRes.data?.data?.card_uri || adsJsonRes.data?.card_uri;
+      const cardUri = adsRes.data?.data?.card_uri || adsRes.data?.card_uri;
       if (cardUri) return cardUri;
-    } catch (adsJsonErr) {
-      const msg = adsJsonErr.response?.data?.errors?.[0]?.message || adsJsonErr.response?.data || adsJsonErr.message;
-      errorLogs.push(`Ads API JSON: ${JSON.stringify(msg)}`);
+    } catch (adsErr) {
+      errorLogs.push(`Ads Manager: ${adsErr.response?.data?.errors?.[0]?.message || adsErr.message}`);
     }
 
-    // Surface the actual Twitter errors so they appear on screen
-    throw new Error(`X Card Creation failed: ${errorLogs.join(' | ')}`);
-  }
-
-  /**
-   * Publish Tweet with Card
-   */
-  async postTweetWithCard(statusText, cardUri) {
-    // 1. Ads Account Organic Tweet endpoint
+    // Attempt 3: Ads Manager form-encoded
     try {
-      const res = await axios.post(
-        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/tweet`,
+      const formRes = await axios.post(
+        `https://ads.twitter.com/accounts/${this.adsAccountId}/cards/video_website`,
         querystring.stringify({
-          as_user_id: null,
-          text: statusText,
-          card_uri: cardUri,
-          nullcast: false
+          name: headline,
+          video_id: mediaId,
+          website_url: websiteUrl,
+          website_title: headline
         }),
         {
           headers: {
             ...this.defaultHeaders,
             'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        }
+      );
+
+      const cardUri = formRes.data?.data?.card_uri || formRes.data?.card_uri;
+      if (cardUri) return cardUri;
+    } catch (formErr) {
+      errorLogs.push(`Ads Form: ${formErr.response?.data?.errors?.[0]?.message || formErr.message}`);
+    }
+
+    throw new Error(`X Card Creation failed: ${errorLogs.join(' | ')}`);
+  }
+
+  /**
+   * Post organic tweet with card_uri
+   */
+  async postTweetWithCard(statusText, cardUri) {
+    // 1. Ads Manager timeline post
+    try {
+      const res = await axios.post(
+        `https://ads.twitter.com/accounts/${this.adsAccountId}/tweet`,
+        {
+          as_user_id: null,
+          text: statusText,
+          card_uri: cardUri,
+          nullcast: false
+        },
+        {
+          headers: {
+            ...this.defaultHeaders,
+            'Content-Type': 'application/json'
           }
         }
       );
@@ -271,7 +263,7 @@ class TwitterClient {
       }
     }
 
-    // 3. GraphQL CreateTweet fallback
+    // 3. GraphQL CreateTweet mutation fallback
     const queryId = 'SoVnRxHkVoiZ2-q371Bs4w';
     const graphqlUrl = `https://x.com/i/api/graphql/${queryId}/CreateTweet`;
 
