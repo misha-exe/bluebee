@@ -158,28 +158,47 @@ router.post('/publish', async (req, res) => {
     return res.status(400).json({ error: 'Missing required card fields: websiteUrl, headline, or mediaId.' });
   }
 
+  const client = new TwitterClient(authToken, ct0, adsAccountId);
+  let cardUri = null;
+
+  // Step 1: Create Card URI
   try {
-    const client = new TwitterClient(authToken, ct0, adsAccountId);
+    cardUri = await client.createVideoWebsiteCard(mediaId, websiteUrl, headline);
+    console.log(`[Publish] Card generated: ${cardUri}`);
+  } catch (cardErr) {
+    const errorDetails = cardErr.response?.data?.errors?.[0]?.message || cardErr.message;
+    return res.status(500).json({
+      error: `Card Creation Failed: ${errorDetails}`
+    });
+  }
 
-    console.log(`[Publish] Preparing card for media: ${mediaId}...`);
-    const cardUri = await client.createVideoWebsiteCard(mediaId, websiteUrl, headline);
+  // Step 2: Post Tweet using X Web Session
+  try {
+    const result = await client.postTweetWithCard(postText, cardUri);
 
-    console.log(`[Publish] Posting tweet (cardUri: ${cardUri || 'direct video card'})...`);
-    const result = await client.postTweetWithCard(postText || '', cardUri, mediaId, websiteUrl, headline);
-    console.log(`[Publish] Successfully posted to timeline!`);
+    if (result.postId) {
+      return res.json({
+        success: true,
+        cardUri: cardUri,
+        postId: result.postId,
+        message: `X created the Website Card post. View post: https://x.com/i/status/${result.postId}`
+      });
+    }
 
-    return res.json({ success: true, cardUri, result, message: 'Website Card posted successfully!' });
-  } catch (err) {
-    const twitterError = err.response?.data;
-    const errorMessage =
-      twitterError?.errors?.[0]?.message ||
-      twitterError?.error ||
-      err.response?.statusText ||
-      err.message;
+    return res.json({
+      success: true,
+      cardUri: cardUri,
+      message: `X web did not return a post ID. Check the X timeline before retrying to avoid a duplicate. Card URI: ${cardUri}`
+    });
+  } catch (postErr) {
+    const errObj = postErr.response?.data?.errors?.[0];
+    const code = errObj?.code || postErr.response?.status || 'Unknown';
+    const message = errObj?.message || postErr.message;
 
-    return res.status(err.response?.status || 500).json({
-      error: `Twitter API Error: ${errorMessage}`,
-      details: twitterError
+    // Exact Share2X notification format:
+    return res.status(400).json({
+      error: `Authorization: ${message} (${code}) The Card was created, but no post was confirmed. Check the X timeline before retrying. Card URI: ${cardUri}`,
+      cardUri: cardUri
     });
   }
 });
