@@ -160,9 +160,15 @@ router.post('/publish', async (req, res) => {
 
   try {
     const client = new TwitterClient(authToken, ct0, adsAccountId);
+
+    console.log(`[Publish] Preparing card for media: ${mediaId}...`);
     const cardUri = await client.createVideoWebsiteCard(mediaId, websiteUrl, headline);
-    const result = await client.postTweetWithCard(postText || '', cardUri);
-    return res.json({ success: true, cardUri, result });
+
+    console.log(`[Publish] Posting tweet (cardUri: ${cardUri || 'direct video card'})...`);
+    const result = await client.postTweetWithCard(postText || '', cardUri, mediaId, websiteUrl, headline);
+    console.log(`[Publish] Successfully posted to timeline!`);
+
+    return res.json({ success: true, cardUri, result, message: 'Website Card posted successfully!' });
   } catch (err) {
     const twitterError = err.response?.data;
     const errorMessage =
