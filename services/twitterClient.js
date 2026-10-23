@@ -3,10 +3,11 @@ const fs = require('fs');
 const querystring = require('querystring');
 
 class TwitterClient {
-  constructor(authToken, ct0, adsAccountId = null) {
+  constructor(authToken, ct0, adsAccountId) {
     this.authToken = authToken;
     this.ct0 = ct0;
-    this.adsAccountId = adsAccountId;
+    // Clean account ID: strips anything non-alphanumeric (e.g. "18ce55xmjw6")
+    this.adsAccountId = (adsAccountId || '').trim();
     this.cookieHeader = `auth_token=${this.authToken}; ct0=${this.ct0};`;
 
     this.defaultHeaders = {
@@ -17,6 +18,35 @@ class TwitterClient {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       'Cookie': this.cookieHeader
     };
+  }
+
+  /**
+   * Fetch Media Library directly from X Ads
+   */
+  async fetchMediaLibrary() {
+    if (!this.adsAccountId) return [];
+
+    try {
+      const res = await axios.get(
+        `https://ads.x.com/api/1/accounts/${this.adsAccountId}/media_library`,
+        {
+          params: { media_category: 'AMPLIFY_VIDEO', count: 30 },
+          headers: this.defaultHeaders
+        }
+      );
+
+      const items = res.data?.data || [];
+      return items.map(item => ({
+        id: item.media_id,
+        mediaId: item.media_id,
+        name: item.name || `${item.media_id}.mp4`,
+        thumbnail: item.media_url || item.thumbnail_url || 'https://abs.twimg.com/sticky/default_profile_images/default_profile.png',
+        meta: item.aspect_ratio ? `${item.aspect_ratio} · Ads Video` : 'Square · Amplify Video'
+      }));
+    } catch (err) {
+      console.warn('[Media Library] Could not fetch remote library from X:', err.response?.data || err.message);
+      return [];
+    }
   }
 
   /**
@@ -57,7 +87,7 @@ class TwitterClient {
       form.append('command', 'APPEND');
       form.append('media_id', mediaId);
       form.append('segment_index', segmentIndex.toString());
-      form.append('media', chunk, { filename: 'video.mp4', contentType: 'application/octet-stream' });
+      form.append('media', chunk, { filename: 'blob.mp4', contentType: 'application/octet-stream' });
 
       await axios.post('https://upload.twitter.com/1.1/media/upload.json', form, {
         headers: {
@@ -79,31 +109,25 @@ class TwitterClient {
       'https://upload.twitter.com/1.1/media/upload.json',
       null,
       {
-        params: {
-          command: 'FINALIZE',
-          media_id: mediaId
-        },
+        params: { command: 'FINALIZE', media_id: mediaId },
         headers: this.defaultHeaders
       }
     );
 
-    // 4. STATUS check (Wait until transcode finishes)
+    // 4. STATUS check
     let processingInfo = finalizeRes.data.processing_info;
     while (processingInfo && (processingInfo.state === 'pending' || processingInfo.state === 'in_progress')) {
       const waitTime = (processingInfo.check_after_secs || 2) * 1000;
       await new Promise(r => setTimeout(r, waitTime));
 
       const statusRes = await axios.get('https://upload.twitter.com/1.1/media/upload.json', {
-        params: {
-          command: 'STATUS',
-          media_id: mediaId
-        },
+        params: { command: 'STATUS', media_id: mediaId },
         headers: this.defaultHeaders
       });
 
       processingInfo = statusRes.data.processing_info;
       if (processingInfo && processingInfo.state === 'failed') {
-        throw new Error(processingInfo.error?.message || 'X failed to process video.');
+        throw new Error(processingInfo.error?.message || 'X transcoding failed');
       }
     }
 
@@ -111,13 +135,13 @@ class TwitterClient {
   }
 
   /**
-   * Add to Ads Media Library
+   * Permanently save video in Ads Media Library
    */
   async addToAdsMediaLibrary(mediaId, title) {
     if (!this.adsAccountId) return;
     try {
       await axios.post(
-        `https://ads-api.twitter.com/12/accounts/${this.adsAccountId}/media_library`,
+        `https://ads.x.com/api/1/accounts/${this.adsAccountId}/media_library`,
         {
           media_id: mediaId,
           name: title,
@@ -125,16 +149,40 @@ class TwitterClient {
         },
         { headers: this.defaultHeaders }
       );
-    } catch {
-      // Non-fatal if account permissions already manage Amplify
+    } catch (err) {
+      console.warn('[Ads Library Notice]', err.response?.data || err.message);
     }
   }
 
   /**
    * Create the Video Website Card
-   * Uses URL-encoded form data required by CAPS
    */
   async createVideoWebsiteCard(mediaId, websiteUrl, headline) {
+    // Try via Ads Account Card endpoint
+    try {
+      const res = await axios.post(
+        `https://ads.x.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
+        querystring.stringify({
+          name: headline,
+          video_id: mediaId,
+          website_url: websiteUrl,
+          website_title: headline
+        }),
+        {
+          headers: {
+            ...this.defaultHeaders,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        }
+      );
+
+      const cardUri = res.data?.data?.card_uri || res.data?.card_uri;
+      if (cardUri) return cardUri;
+    } catch (err) {
+      console.warn('[Ads Card failed, attempting CAPS platform fallback]', err.response?.data || err.message);
+    }
+
+    // Fallback: Twitter CAPS endpoint
     const cardData = {
       "twitter:card": "video_website",
       "twitter:api:api:endpoint": "1",
@@ -144,83 +192,42 @@ class TwitterClient {
       "twitter:player": mediaId
     };
 
-    const postBody = querystring.stringify({
-      card_data: JSON.stringify(cardData)
-    });
-
-    try {
-      // Primary: Twitter CAPS endpoint
-      const res = await axios.post('https://caps.twitter.com/v2/cards/create.json', postBody, {
+    const capsRes = await axios.post(
+      'https://caps.twitter.com/v2/cards/create.json',
+      querystring.stringify({ card_data: JSON.stringify(cardData) }),
+      {
         headers: {
           ...this.defaultHeaders,
           'Content-Type': 'application/x-www-form-urlencoded'
         }
-      });
+      }
+    );
 
-      if (res.data && res.data.card_uri) {
-        return res.data.card_uri;
-      }
-    } catch (err) {
-      // Fallback: Ads Manager Cards endpoint
-      if (this.adsAccountId) {
-        const adsRes = await axios.post(
-          `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
-          querystring.stringify({
-            name: headline,
-            video_id: mediaId,
-            website_url: websiteUrl,
-            website_title: headline
-          }),
-          {
-            headers: {
-              ...this.defaultHeaders,
-              'Content-Type': 'application/x-www-form-urlencoded'
-            }
-          }
-        );
-        if (adsRes.data?.data?.card_uri) {
-          return adsRes.data.data.card_uri;
-        }
-      }
-      throw err;
+    if (capsRes.data?.card_uri) {
+      return capsRes.data.card_uri;
     }
+
+    throw new Error('Could not generate Video Website Card URI');
   }
 
   /**
-   * Posts Tweet with attached card_uri
+   * Publish Organic Tweet with Card
    */
   async postTweetWithCard(statusText, cardUri) {
-    // Method 1: Standard REST update endpoint (Supports card_uri with session auth)
-    try {
-      const restBody = querystring.stringify({
-        status: statusText,
-        card_uri: cardUri
-      });
+    // Direct Ads Organic Tweet Endpoint (nullcast: false creates public tweet)
+    const payload = {
+      text: statusText,
+      card_uri: cardUri,
+      nullcast: false
+    };
 
-      const res = await axios.post('https://twitter.com/i/api/1.1/statuses/update.json', restBody, {
-        headers: {
-          ...this.defaultHeaders,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      });
-      return res.data;
-    } catch (restErr) {
-      // Method 2: Ads account organic tweet endpoint fallback
-      if (this.adsAccountId) {
-        const adsTweetRes = await axios.post(
-          `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/tweet`,
-          {
-            as_user_id: null,
-            text: statusText,
-            card_uri: cardUri,
-            nullcast: false
-          },
-          { headers: this.defaultHeaders }
-        );
-        return adsTweetRes.data;
-      }
-      throw restErr;
-    }
+    const res = await axios.post(
+      `https://ads.x.com/api/1/accounts/${this.adsAccountId}/tweet`,
+      payload,
+      { headers: this.defaultHeaders }
+    );
+
+    return res.data;
   }
 }
 
