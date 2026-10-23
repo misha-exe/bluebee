@@ -176,7 +176,7 @@ router.post('/publish', async (req, res) => {
     const message = errObj?.message || postErr.message;
 
     return res.status(400).json({
-      error: `Authorization: ${message} (${code}) The post could not be confirmed. Check your X timeline before retrying.`,
+      error: `Post failed: ${message} (HTTP ${code}). The post could not be confirmed - check your X timeline before retrying.`,
       details: postErr.response?.data
     });
   }
