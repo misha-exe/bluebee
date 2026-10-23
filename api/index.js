@@ -3,14 +3,14 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
 
 const { TMP_DIR, downloadVideo, makeSquare800, generateThumbnail } = require('../services/videoProcessor');
 const TwitterClient = require('../services/twitterClient');
+const db = require('../services/db');
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 const upload = multer({
   dest: TMP_DIR,
@@ -20,7 +20,6 @@ const upload = multer({
 const progressClients = {};
 const router = express.Router();
 
-// SSE Route
 router.get('/progress/:clientId', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -38,32 +37,13 @@ function sendProgress(clientId, status, percent = 0) {
   }
 }
 
-// Media Library list
+// GET Media Library from DB
 router.get('/media', async (req, res) => {
-  const authToken = process.env.TWITTER_AUTH_TOKEN;
-  const ct0 = process.env.TWITTER_CT0;
-  const adsAccountId = process.env.TWITTER_ADS_ACCOUNT_ID;
-
-  if (authToken && ct0 && adsAccountId) {
-    const client = new TwitterClient(authToken, ct0, adsAccountId);
-    const remoteMedia = await client.fetchMediaLibrary();
-    if (remoteMedia && remoteMedia.length > 0) {
-      return res.json(remoteMedia);
-    }
-  }
-
-  return res.json([
-    {
-      id: "media_default",
-      mediaId: "2104707817047224320",
-      name: "59X2ZM5n0k8CFp5f.mp4",
-      thumbnail: "https://pbs.twimg.com/amplify_video_thumb/2104707817047224320/img/Sk3kHH4uHdI8y-EU.jpg",
-      meta: "Square · 800x800"
-    }
-  ]);
+  const items = await db.getAllMedia();
+  return res.json(items);
 });
 
-// URL Upload
+// URL Upload Route
 router.post('/upload-url', async (req, res) => {
   const { videoUrl, clientId } = req.body;
   if (!videoUrl) return res.status(400).json({ error: 'Missing video URL' });
@@ -101,25 +81,26 @@ router.post('/upload-url', async (req, res) => {
     sendProgress(clientId, 'Video added to the Ads Media Library and selected', 100);
 
     const thumbBase64 = `data:image/jpeg;base64,${fs.readFileSync(thumbPath).toString('base64')}`;
-    const newMedia = {
-      id: uuidv4(),
+
+    // SAVE TO DATABASE
+    const savedRecord = await db.saveMedia({
       mediaId: mediaId,
       name: path.basename(videoUrl),
       thumbnail: thumbBase64,
       meta: 'Square · 800x800'
-    };
+    });
 
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
-    return res.json({ success: true, media: newMedia });
+    return res.json({ success: true, media: savedRecord });
   } catch (err) {
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
     return res.status(500).json({ error: err.message });
   }
 });
 
-// File Upload (< 4.5MB)
+// File Upload Route
 router.post('/upload-file', upload.single('video'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded or file exceeds 4.5MB' });
+  if (!req.file) return res.status(400).json({ error: 'No video uploaded or file exceeds 4.5MB' });
   const clientId = req.body.clientId;
 
   const rawPath = req.file.path;
@@ -149,16 +130,17 @@ router.post('/upload-file', upload.single('video'), async (req, res) => {
     sendProgress(clientId, 'Video added to the Ads Media Library and selected', 100);
 
     const thumbBase64 = `data:image/jpeg;base64,${fs.readFileSync(thumbPath).toString('base64')}`;
-    const newMedia = {
-      id: uuidv4(),
+
+    // SAVE TO DATABASE
+    const savedRecord = await db.saveMedia({
       mediaId: mediaId,
       name: req.file.originalname,
       thumbnail: thumbBase64,
       meta: 'Square · 800x800'
-    };
+    });
 
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
-    return res.json({ success: true, media: newMedia });
+    return res.json({ success: true, media: savedRecord });
   } catch (err) {
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
     return res.status(500).json({ error: err.message });
@@ -173,7 +155,7 @@ router.post('/publish', async (req, res) => {
   const adsAccountId = process.env.TWITTER_ADS_ACCOUNT_ID;
 
   if (!websiteUrl || !headline || !mediaId) {
-    return res.status(400).json({ error: 'Missing required fields: websiteUrl, headline, or mediaId.' });
+    return res.status(400).json({ error: 'Missing required card fields: websiteUrl, headline, or mediaId.' });
   }
 
   try {
@@ -196,13 +178,7 @@ router.post('/publish', async (req, res) => {
   }
 });
 
-// Mount router on BOTH '/api' and '/' to eliminate routing prefix mismatches
 app.use('/api', router);
 app.use('/', router);
-
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
-}
 
 module.exports = app;
