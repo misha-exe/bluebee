@@ -15,14 +15,10 @@ class TwitterClient {
       'x-twitter-auth-type': 'OAuth2Session',
       'x-twitter-active-user': 'yes',
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Cookie': this.cookieHeader,
-      'Content-Type': 'application/json'
+      'Cookie': this.cookieHeader
     };
   }
 
-  /**
-   * Safely loads agent-twitter-client via dynamic import to prevent ERR_REQUIRE_ESM crash
-   */
   async getAgentScraper() {
     try {
       const { Scraper } = await import('agent-twitter-client');
@@ -32,14 +28,13 @@ class TwitterClient {
         `ct0=${this.ct0}; Domain=.twitter.com; Path=/; Secure`
       ]);
       return scraper;
-    } catch (err) {
-      console.warn('[agent-twitter-client load notice]', err.message);
+    } catch {
       return null;
     }
   }
 
   /**
-   * Upload video via Twitter Chunked Media Upload
+   * Upload video via Twitter Chunked Upload
    */
   async uploadMediaChunked(filePath, onProgress) {
     const stat = fs.statSync(filePath);
@@ -103,7 +98,7 @@ class TwitterClient {
       }
     );
 
-    // 4. STATUS check
+    // 4. STATUS check (Wait until video transcoding finishes)
     let processingInfo = finalizeRes.data.processing_info;
     while (processingInfo && (processingInfo.state === 'pending' || processingInfo.state === 'in_progress')) {
       const waitTime = (processingInfo.check_after_secs || 2) * 1000;
@@ -116,7 +111,7 @@ class TwitterClient {
 
       processingInfo = statusRes.data.processing_info;
       if (processingInfo && processingInfo.state === 'failed') {
-        throw new Error(processingInfo.error?.message || 'X failed to process video.');
+        throw new Error(processingInfo.error?.message || 'X failed to transcode video.');
       }
     }
 
@@ -131,12 +126,17 @@ class TwitterClient {
     try {
       await axios.post(
         `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/media_library`,
-        {
+        querystring.stringify({
           media_id: mediaId,
           name: title,
           media_type: 'VIDEO'
-        },
-        { headers: this.defaultHeaders }
+        }),
+        {
+          headers: {
+            ...this.defaultHeaders,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        }
       );
     } catch (err) {
       console.warn('[Ads Library Notice]', err.response?.data || err.message);
@@ -147,29 +147,12 @@ class TwitterClient {
    * Create the Video Website Card
    */
   async createVideoWebsiteCard(mediaId, websiteUrl, headline) {
-    // 1. Primary: Ads Manager Web API
-    try {
-      const adsRes = await axios.post(
-        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
-        {
-          name: headline,
-          video_id: mediaId,
-          website_url: websiteUrl,
-          website_title: headline
-        },
-        { headers: this.defaultHeaders }
-      );
+    const errorLogs = [];
 
-      const cardUri = adsRes.data?.data?.card_uri || adsRes.data?.card_uri;
-      if (cardUri) return cardUri;
-    } catch (adsErr) {
-      console.warn('[Ads Card endpoint notice]', adsErr.response?.data || adsErr.message);
-    }
-
-    // 2. Secondary: CAPS platform with complete 800x800 dimensions
+    // Attempt 1: Twitter Card Platform (CAPS) with promo_video_website
     try {
       const cardData = {
-        "twitter:card": "video_website",
+        "twitter:card": "promo_video_website",
         "twitter:api:api:endpoint": "1",
         "twitter:title": headline,
         "twitter:website_url": websiteUrl,
@@ -194,45 +177,101 @@ class TwitterClient {
         return capsRes.data.card_uri;
       }
     } catch (capsErr) {
-      console.warn('[CAPS endpoint notice]', capsErr.response?.data || capsErr.message);
+      const msg = capsErr.response?.data?.errors?.[0]?.message || capsErr.response?.data || capsErr.message;
+      errorLogs.push(`CAPS promo_video_website: ${JSON.stringify(msg)}`);
     }
 
-    throw new Error('Unable to generate Video Website Card URI from X.');
+    // Attempt 2: Ads Manager Web API (URL-encoded)
+    try {
+      const adsRes = await axios.post(
+        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
+        querystring.stringify({
+          name: headline,
+          video_id: mediaId,
+          website_url: websiteUrl,
+          website_title: headline
+        }),
+        {
+          headers: {
+            ...this.defaultHeaders,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        }
+      );
+
+      const cardUri = adsRes.data?.data?.card_uri || adsRes.data?.card_uri;
+      if (cardUri) return cardUri;
+    } catch (adsErr) {
+      const msg = adsErr.response?.data?.errors?.[0]?.message || adsErr.response?.data || adsErr.message;
+      errorLogs.push(`Ads API form-encoded: ${JSON.stringify(msg)}`);
+    }
+
+    // Attempt 3: Ads Manager Web API (JSON)
+    try {
+      const adsJsonRes = await axios.post(
+        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
+        {
+          name: headline,
+          video_id: mediaId,
+          website_url: websiteUrl,
+          website_title: headline
+        },
+        {
+          headers: {
+            ...this.defaultHeaders,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      const cardUri = adsJsonRes.data?.data?.card_uri || adsJsonRes.data?.card_uri;
+      if (cardUri) return cardUri;
+    } catch (adsJsonErr) {
+      const msg = adsJsonErr.response?.data?.errors?.[0]?.message || adsJsonErr.response?.data || adsJsonErr.message;
+      errorLogs.push(`Ads API JSON: ${JSON.stringify(msg)}`);
+    }
+
+    // Surface the actual Twitter errors so they appear on screen
+    throw new Error(`X Card Creation failed: ${errorLogs.join(' | ')}`);
   }
 
   /**
-   * Posts Tweet with attached card_uri
+   * Publish Tweet with Card
    */
   async postTweetWithCard(statusText, cardUri) {
-    // 1. Primary: Ads Account Organic Tweet endpoint
+    // 1. Ads Account Organic Tweet endpoint
     try {
       const res = await axios.post(
         `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/tweet`,
-        {
+        querystring.stringify({
           as_user_id: null,
           text: statusText,
           card_uri: cardUri,
           nullcast: false
-        },
-        { headers: this.defaultHeaders }
+        }),
+        {
+          headers: {
+            ...this.defaultHeaders,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        }
       );
       return res.data;
     } catch (adsErr) {
-      console.warn('[Ads Tweet endpoint notice, attempting GraphQL mutation]', adsErr.response?.data || adsErr.message);
+      console.warn('[Ads Tweet endpoint notice]', adsErr.response?.data || adsErr.message);
     }
 
-    // 2. Fallback: agent-twitter-client or GraphQL CreateTweet
+    // 2. agent-twitter-client fallback
     const scraper = await this.getAgentScraper();
     if (scraper) {
       try {
-        const result = await scraper.sendTweet(statusText ? `${statusText} ${cardUri}` : cardUri);
-        return result;
+        return await scraper.sendTweet(statusText ? `${statusText} ${cardUri}` : cardUri);
       } catch (agentErr) {
-        console.warn('[agent-twitter-client sendTweet notice]', agentErr.message);
+        console.warn('[agent-twitter-client notice]', agentErr.message);
       }
     }
 
-    // 3. Fallback: Direct GraphQL CreateTweet mutation
+    // 3. GraphQL CreateTweet fallback
     const queryId = 'SoVnRxHkVoiZ2-q371Bs4w';
     const graphqlUrl = `https://x.com/i/api/graphql/${queryId}/CreateTweet`;
 
@@ -250,7 +289,12 @@ class TwitterClient {
       }
     };
 
-    const gqlRes = await axios.post(graphqlUrl, graphqlPayload, { headers: this.defaultHeaders });
+    const gqlRes = await axios.post(graphqlUrl, graphqlPayload, {
+      headers: {
+        ...this.defaultHeaders,
+        'Content-Type': 'application/json'
+      }
+    });
     return gqlRes.data;
   }
 }
