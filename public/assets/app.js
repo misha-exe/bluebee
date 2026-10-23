@@ -3,7 +3,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let mediaList = [];
   let selectedMediaItem = null;
 
-  // DOM Elements
   const postText = document.getElementById('postText');
   const postCount = document.getElementById('postCount');
   const headline = document.getElementById('headline');
@@ -27,23 +26,35 @@ document.addEventListener('DOMContentLoaded', () => {
   const sidebarClose = document.getElementById('sidebarClose');
   const sidebarOverlay = document.getElementById('sidebarOverlay');
 
-  // Server-Sent Events (SSE) for upload stages
+  // Helper to parse responses safely without throwing "Unexpected token <"
+  async function parseResponse(res) {
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Server error occurred');
+      return data;
+    }
+    const htmlText = await res.text();
+    throw new Error(`Server returned status ${res.status}: ${htmlText.replace(/<[^>]*>/g, '').trim().substring(0, 120)}`);
+  }
+
+  // SSE setup
   const evtSource = new EventSource(`/api/progress/${clientId}`);
   evtSource.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    uploadProgress.hidden = false;
-    uploadProgress.value = data.percent;
-    uploadStatus.textContent = data.status;
+    try {
+      const data = JSON.parse(event.data);
+      uploadProgress.hidden = false;
+      uploadProgress.value = data.percent;
+      uploadStatus.textContent = data.status;
+    } catch {}
   };
 
-  // Toast Helper
   function showToast(msg, isError = false) {
     toast.textContent = msg;
     toast.className = `toast show ${isError ? 'error' : ''}`;
-    setTimeout(() => { toast.className = 'toast'; }, 4000);
+    setTimeout(() => { toast.className = 'toast'; }, 5000);
   }
 
-  // Text counters
   postText.addEventListener('input', () => {
     postCount.textContent = `${postText.value.length}/280`;
     validateForm();
@@ -61,20 +72,19 @@ document.addEventListener('DOMContentLoaded', () => {
     publishBtn.disabled = !isValid;
   }
 
-  // Load Media Library
   async function loadMedia() {
     try {
       const res = await fetch('/api/media');
-      mediaList = await res.json();
+      mediaList = await parseResponse(res);
       renderMediaGrid();
     } catch (err) {
-      console.error(err);
+      console.warn('Failed to load media:', err.message);
     }
   }
 
   function renderMediaGrid() {
     mediaGrid.innerHTML = '';
-    mediaList.forEach((item, index) => {
+    mediaList.forEach((item) => {
       const btn = document.createElement('button');
       btn.className = `media-card ${selectedMediaItem && selectedMediaItem.id === item.id ? 'selected' : ''}`;
       btn.innerHTML = `
@@ -115,25 +125,18 @@ document.addEventListener('DOMContentLoaded', () => {
     validateForm();
   }
 
-  // Direct File Upload
-  uploadVideoBtn.addEventListener('click', async () => {
-    if (!videoFile.files[0]) {
-      showToast('Select a video file to upload', true);
-      return;
-    }
-    const formData = new FormData();
-    formData.append('video', videoFile.files[0]);
-    formData.append('clientId', clientId);
-
-    uploadStatus.textContent = 'Checking video file...';
-    uploadProgress.hidden = false;
-    uploadProgress.value = 5;
+  // URL Upload
+  uploadUrlBtn.addEventListener('click', async () => {
+    const url = videoUrl.value.trim();
+    if (!url) return showToast('Enter a valid video URL', true);
 
     try {
-      const res = await fetch('/api/upload-file', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
+      const res = await fetch('/api/upload-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoUrl: url, clientId })
+      });
+      const data = await parseResponse(res);
       selectMedia(data.media);
       loadMedia();
       showToast('Video added to the Ads Media Library and selected');
@@ -142,23 +145,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // URL Upload
-  uploadUrlBtn.addEventListener('click', async () => {
-    const url = videoUrl.value.trim();
-    if (!url) {
-      showToast('Enter a valid video URL', true);
-      return;
-    }
+  // Direct File Upload
+  uploadVideoBtn.addEventListener('click', async () => {
+    if (!videoFile.files[0]) return showToast('Select a video file to upload', true);
+    
+    const formData = new FormData();
+    formData.append('video', videoFile.files[0]);
+    formData.append('clientId', clientId);
+
+    uploadStatus.textContent = 'Preparing upload...';
+    uploadProgress.hidden = false;
+    uploadProgress.value = 5;
 
     try {
-      const res = await fetch('/api/upload-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl: url, clientId })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
+      const res = await fetch('/api/upload-file', { method: 'POST', body: formData });
+      const data = await parseResponse(res);
       selectMedia(data.media);
       loadMedia();
       showToast('Video added to the Ads Media Library and selected');
@@ -184,9 +185,7 @@ document.addEventListener('DOMContentLoaded', () => {
         })
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
+      const data = await parseResponse(res);
       showToast(data.message || 'Website Card posted successfully!');
       postText.value = '';
       headline.value = '';
@@ -201,7 +200,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Mobile Drawer Toggle
   if (menuToggle) menuToggle.addEventListener('click', () => document.body.classList.add('nav-open'));
   if (sidebarClose) sidebarClose.addEventListener('click', () => document.body.classList.remove('nav-open'));
   if (sidebarOverlay) sidebarOverlay.addEventListener('click', () => document.body.classList.remove('nav-open'));
