@@ -1,7 +1,6 @@
 const axios = require('axios');
 const fs = require('fs');
 const querystring = require('querystring');
-const { Scraper } = require('agent-twitter-client');
 
 class TwitterClient {
   constructor(authToken, ct0, adsAccountId) {
@@ -22,42 +21,20 @@ class TwitterClient {
   }
 
   /**
-   * Initializes agent-twitter-client with session cookies
+   * Safely loads agent-twitter-client via dynamic import to prevent ERR_REQUIRE_ESM crash
    */
   async getAgentScraper() {
-    const scraper = new Scraper();
-    await scraper.setCookies([
-      `auth_token=${this.authToken}; Domain=.twitter.com; Path=/; Secure; HttpOnly`,
-      `ct0=${this.ct0}; Domain=.twitter.com; Path=/; Secure`
-    ]);
-    return scraper;
-  }
-
-  /**
-   * Fetch Media Library from X Ads
-   */
-  async fetchMediaLibrary() {
-    if (!this.adsAccountId) return [];
-
     try {
-      const res = await axios.get(
-        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/media_library`,
-        {
-          params: { media_category: 'AMPLIFY_VIDEO', count: 30 },
-          headers: this.defaultHeaders
-        }
-      );
-
-      const items = res.data?.data || [];
-      return items.map(item => ({
-        id: item.media_id,
-        mediaId: item.media_id,
-        name: item.name || `${item.media_id}.mp4`,
-        thumbnail: item.media_url || item.thumbnail_url || 'https://abs.twimg.com/sticky/default_profile_images/default_profile.png',
-        meta: item.aspect_ratio ? `${item.aspect_ratio} · Ads Video` : 'Square · Amplify Video'
-      }));
-    } catch {
-      return [];
+      const { Scraper } = await import('agent-twitter-client');
+      const scraper = new Scraper();
+      await scraper.setCookies([
+        `auth_token=${this.authToken}; Domain=.twitter.com; Path=/; Secure; HttpOnly`,
+        `ct0=${this.ct0}; Domain=.twitter.com; Path=/; Secure`
+      ]);
+      return scraper;
+    } catch (err) {
+      console.warn('[agent-twitter-client load notice]', err.message);
+      return null;
     }
   }
 
@@ -168,11 +145,9 @@ class TwitterClient {
 
   /**
    * Create the Video Website Card
-   * Primary: Ads Manager Internal Web API
-   * Secondary: Twitter CAPS platform with explicit 800x800 dimensions
    */
   async createVideoWebsiteCard(mediaId, websiteUrl, headline) {
-    // Method A: Internal Ads Manager Card Mutation
+    // 1. Primary: Ads Manager Web API
     try {
       const adsRes = await axios.post(
         `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
@@ -191,31 +166,35 @@ class TwitterClient {
       console.warn('[Ads Card endpoint notice]', adsErr.response?.data || adsErr.message);
     }
 
-    // Method B: Twitter Card Platform (CAPS) with complete 800x800 geometry
-    const cardData = {
-      "twitter:card": "video_website",
-      "twitter:api:api:endpoint": "1",
-      "twitter:title": headline,
-      "twitter:website_url": websiteUrl,
-      "twitter:player": mediaId,
-      "twitter:player:width": 800,
-      "twitter:player:height": 800,
-      "twitter:player:stream_content_type": "video/mp4"
-    };
+    // 2. Secondary: CAPS platform with complete 800x800 dimensions
+    try {
+      const cardData = {
+        "twitter:card": "video_website",
+        "twitter:api:api:endpoint": "1",
+        "twitter:title": headline,
+        "twitter:website_url": websiteUrl,
+        "twitter:player": mediaId,
+        "twitter:player:width": 800,
+        "twitter:player:height": 800,
+        "twitter:player:stream_content_type": "video/mp4"
+      };
 
-    const capsRes = await axios.post(
-      'https://caps.twitter.com/v2/cards/create.json',
-      querystring.stringify({ card_data: JSON.stringify(cardData) }),
-      {
-        headers: {
-          ...this.defaultHeaders,
-          'Content-Type': 'application/x-www-form-urlencoded'
+      const capsRes = await axios.post(
+        'https://caps.twitter.com/v2/cards/create.json',
+        querystring.stringify({ card_data: JSON.stringify(cardData) }),
+        {
+          headers: {
+            ...this.defaultHeaders,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
         }
-      }
-    );
+      );
 
-    if (capsRes.data?.card_uri) {
-      return capsRes.data.card_uri;
+      if (capsRes.data?.card_uri) {
+        return capsRes.data.card_uri;
+      }
+    } catch (capsErr) {
+      console.warn('[CAPS endpoint notice]', capsErr.response?.data || capsErr.message);
     }
 
     throw new Error('Unable to generate Video Website Card URI from X.');
@@ -223,11 +202,9 @@ class TwitterClient {
 
   /**
    * Posts Tweet with attached card_uri
-   * Primary: Ads Account Organic Tweet endpoint
-   * Secondary: Direct GraphQL CreateTweet via web session
    */
   async postTweetWithCard(statusText, cardUri) {
-    // 1. Try via Ads Account Organic Tweet (nullcast: false creates public tweet)
+    // 1. Primary: Ads Account Organic Tweet endpoint
     try {
       const res = await axios.post(
         `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/tweet`,
@@ -244,8 +221,18 @@ class TwitterClient {
       console.warn('[Ads Tweet endpoint notice, attempting GraphQL mutation]', adsErr.response?.data || adsErr.message);
     }
 
-    // 2. Fallback: Internal GraphQL CreateTweet mutation
-    // Active Twitter Web queryId for CreateTweet
+    // 2. Fallback: agent-twitter-client or GraphQL CreateTweet
+    const scraper = await this.getAgentScraper();
+    if (scraper) {
+      try {
+        const result = await scraper.sendTweet(statusText ? `${statusText} ${cardUri}` : cardUri);
+        return result;
+      } catch (agentErr) {
+        console.warn('[agent-twitter-client sendTweet notice]', agentErr.message);
+      }
+    }
+
+    // 3. Fallback: Direct GraphQL CreateTweet mutation
     const queryId = 'SoVnRxHkVoiZ2-q371Bs4w';
     const graphqlUrl = `https://x.com/i/api/graphql/${queryId}/CreateTweet`;
 
