@@ -15,6 +15,8 @@ class TwitterClient {
       'x-twitter-auth-type': 'OAuth2Session',
       'x-twitter-active-user': 'yes',
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Origin': 'https://x.com',
+      'Referer': 'https://x.com/',
       'Cookie': this.cookieHeader
     };
   }
@@ -105,10 +107,35 @@ class TwitterClient {
   }
 
   /**
-   * Save video to Ads Media Library
+   * Save video to Ads Media Library (Required before card creation)
    */
   async addToAdsMediaLibrary(mediaId, title) {
     if (!this.adsAccountId) return;
+
+    const adsHeaders = {
+      ...this.defaultHeaders,
+      'Origin': 'https://ads.twitter.com',
+      'Referer': 'https://ads.twitter.com/'
+    };
+
+    // Try JSON
+    try {
+      await axios.post(
+        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/media_library`,
+        {
+          media_id: mediaId,
+          name: title,
+          media_type: 'VIDEO'
+        },
+        { headers: { ...adsHeaders, 'Content-Type': 'application/json' } }
+      );
+      console.log(`[Media Library] Successfully registered media ${mediaId} via JSON.`);
+      return;
+    } catch (errJson) {
+      console.warn('[Media Library JSON Notice]', errJson.response?.data || errJson.message);
+    }
+
+    // Try form-encoded
     try {
       await axios.post(
         `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/media_library`,
@@ -117,85 +144,140 @@ class TwitterClient {
           name: title,
           media_type: 'VIDEO'
         }),
-        {
-          headers: {
-            ...this.defaultHeaders,
-            'Content-Type': 'application/x-www-form-urlencoded'
-          }
-        }
+        { headers: { ...adsHeaders, 'Content-Type': 'application/x-www-form-urlencoded' } }
       );
-    } catch {}
+      console.log(`[Media Library] Successfully registered media ${mediaId} via Form.`);
+    } catch (errForm) {
+      console.warn('[Media Library Form Notice]', errForm.response?.data || errForm.message);
+    }
   }
 
   /**
-   * Step 1: Create Card URI via Twitter CAPS platform
-   * Generates card://[Snowflake]
+   * Step 1: Create Video Website Card URI
    */
   async createVideoWebsiteCard(mediaId, websiteUrl, headline) {
-    const cardData = {
-      "twitter:card": "video_website",
-      "twitter:api:api:endpoint": "1",
-      "twitter:title": headline,
-      "twitter:website_url": websiteUrl,
-      "twitter:player": mediaId,
-      "twitter:player:width": 800,
-      "twitter:player:height": 800,
-      "twitter:player:stream_content_type": "video/mp4"
-    };
+    const errorLogs = [];
 
-    const endpoints = [
+    // Attempt 1: Twitter Card Platform (CAPS) with full card payload
+    const capsEndpoints = [
       'https://caps.twitter.com/v2/cards/create.json',
       'https://caps.x.com/v2/cards/create.json'
     ];
 
-    let lastError = null;
+    const cardPayloads = [
+      {
+        "twitter:card": "video_website",
+        "twitter:api:api:endpoint": "1",
+        "twitter:title": headline,
+        "twitter:website_url": websiteUrl,
+        "twitter:player": mediaId,
+        "twitter:player:width": 800,
+        "twitter:player:height": 800,
+        "twitter:player:stream_content_type": "video/mp4"
+      },
+      {
+        "twitter:card": "promo_video_website",
+        "twitter:api:api:endpoint": "1",
+        "twitter:title": headline,
+        "twitter:website_url": websiteUrl,
+        "twitter:player": mediaId,
+        "twitter:player:width": 800,
+        "twitter:player:height": 800,
+        "twitter:player:stream_content_type": "video/mp4"
+      }
+    ];
 
-    for (const url of endpoints) {
-      try {
-        const res = await axios.post(
-          url,
-          querystring.stringify({ card_data: JSON.stringify(cardData) }),
-          {
-            headers: {
-              ...this.defaultHeaders,
-              'Content-Type': 'application/x-www-form-urlencoded'
+    for (const endpoint of capsEndpoints) {
+      for (const cardData of cardPayloads) {
+        try {
+          const res = await axios.post(
+            endpoint,
+            querystring.stringify({ card_data: JSON.stringify(cardData) }),
+            {
+              headers: {
+                ...this.defaultHeaders,
+                'Content-Type': 'application/x-www-form-urlencoded'
+              }
             }
-          }
-        );
+          );
 
-        if (res.data && res.data.card_uri) {
-          return res.data.card_uri;
+          if (res.data?.card_uri) {
+            return res.data.card_uri;
+          }
+        } catch (err) {
+          const msg = err.response?.data?.errors?.[0]?.message || err.message;
+          errorLogs.push(`${endpoint} (${cardData["twitter:card"]}): ${msg}`);
         }
-      } catch (err) {
-        lastError = err;
       }
     }
 
-    // Fallback: Ads Card endpoint
+    // Attempt 2: Ads Manager Card API
     if (this.adsAccountId) {
-      try {
-        const adsRes = await axios.post(
-          `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
-          querystring.stringify({
-            name: headline,
-            video_id: mediaId,
-            website_url: websiteUrl,
-            website_title: headline
-          }),
-          {
-            headers: {
-              ...this.defaultHeaders,
-              'Content-Type': 'application/x-www-form-urlencoded'
+      const adsUrls = [
+        `https://ads.twitter.com/api/1/accounts/${this.adsAccountId}/cards/video_website`,
+        `https://ads.x.com/api/1/accounts/${this.adsAccountId}/cards/video_website`
+      ];
+
+      const adsHeaders = {
+        ...this.defaultHeaders,
+        'Origin': 'https://ads.twitter.com',
+        'Referer': 'https://ads.twitter.com/'
+      };
+
+      for (const url of adsUrls) {
+        // Form encoded
+        try {
+          const adsRes = await axios.post(
+            url,
+            querystring.stringify({
+              name: headline,
+              video_id: mediaId,
+              website_url: websiteUrl,
+              website_title: headline
+            }),
+            {
+              headers: {
+                ...adsHeaders,
+                'Content-Type': 'application/x-www-form-urlencoded'
+              }
             }
-          }
-        );
-        if (adsRes.data?.data?.card_uri) {
-          return adsRes.data.data.card_uri;
+          );
+
+          const cardUri = adsRes.data?.data?.card_uri || adsRes.data?.card_uri;
+          if (cardUri) return cardUri;
+        } catch (err) {
+          const msg = err.response?.data?.errors?.[0]?.message || err.response?.data?.error || err.message;
+          errorLogs.push(`Ads API (${url}): ${msg}`);
         }
-      } catch {}
+
+        // JSON
+        try {
+          const adsJsonRes = await axios.post(
+            url,
+            {
+              name: headline,
+              video_id: mediaId,
+              website_url: websiteUrl,
+              website_title: headline
+            },
+            {
+              headers: {
+                ...adsHeaders,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+
+          const cardUri = adsJsonRes.data?.data?.card_uri || adsJsonRes.data?.card_uri;
+          if (cardUri) return cardUri;
+        } catch (err) {
+          const msg = err.response?.data?.errors?.[0]?.message || err.response?.data?.error || err.message;
+          errorLogs.push(`Ads API JSON (${url}): ${msg}`);
+        }
+      }
     }
 
-    throw lastError || new Error('Could not create Video Website Card on X.');
+    throw new Error(errorLogs.join(' | '));
   }
 
   /**
@@ -231,7 +313,6 @@ class TwitterClient {
         }
       } catch (err) {
         lastErr = err;
-        // If error response from Twitter (e.g. 226, 344), break and return it
         if (err.response?.data?.errors) {
           break;
         }
