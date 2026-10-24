@@ -161,25 +161,46 @@ router.post('/publish', async (req, res) => {
   const client = new TwitterClient(authToken, ct0, adsAccountId);
 
   try {
-    console.log(`[Publish] Posting 800x800 square video with headline & destination link...`);
+    console.log('[Publish] Creating Video Website Card and posting...');
     const result = await client.postTweet(postText, mediaId, websiteUrl, headline);
 
     const postId = result.postId || 'posted';
     return res.json({
       success: true,
-      postId: postId,
+      postId,
+      cardUri: result.cardUri,
       message: `X created the Website Card post. View post: https://x.com/i/status/${postId}`
     });
   } catch (postErr) {
-    const errObj = postErr.response?.data?.errors?.[0];
-    const code = errObj?.code || postErr.response?.status || 'Unknown';
-    const message = errObj?.message || postErr.message;
-
+    console.error('[Publish] failed:', postErr.message, JSON.stringify(postErr.response?.data || {}));
     return res.status(400).json({
-      error: `Post failed: ${message} (HTTP ${code}). The post could not be confirmed - check your X timeline before retrying.`,
+      error: postErr.message,
       details: postErr.response?.data
     });
   }
+});
+
+// Setup check: GET /api/diagnose (remove or protect once everything works)
+router.get('/diagnose', async (req, res) => {
+  const client = new TwitterClient(
+    process.env.TWITTER_AUTH_TOKEN,
+    process.env.TWITTER_CT0,
+    process.env.TWITTER_ADS_ACCOUNT_ID
+  );
+  const report = {
+    hasAdsAccountId: !!client.adsAccountId,
+    hasAdsBearer: !!client.adsBearer,
+    hasWebSession: !!(client.authToken && client.ct0),
+    adsApiHost: 'ads-api.x.com'
+  };
+  try {
+    report.adsAccount = await client.checkAdsAccess();
+    report.ok = true;
+  } catch (err) {
+    report.ok = false;
+    report.error = err.message;
+  }
+  return res.json(report);
 });
 
 app.use('/api', router);
