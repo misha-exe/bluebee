@@ -2,7 +2,6 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const Module = require('module');
-const crypto = require('crypto');
 
 /**
  * Locate an installed package directory by walking the node_modules
@@ -59,32 +58,13 @@ function getQueryIdFromAgentTwitterClient() {
 }
 
 
-/* ---------- Ads API (OAuth 1.0a) helpers: used ONLY for media library + card creation ---------- */
-
+/* ---------- Ads site (ads-api.x.com) via the logged-in web session ----------
+ * Captured from ads.x.com itself: POST https://ads-api.x.com/11/accounts/{id}/cards with a JSON body,
+ * authenticated by the same cookies (auth_token + ct0) plus the Ads site's own bearer token.
+ * No Ads API developer keys are involved.
+ */
 const ADS_HOST = 'https://ads-api.x.com';
-// X's docs say v12 but live servers have answered "Version 12.0 not available",
-// so the version is negotiated at runtime and cached.
-let adsVersionCache = null;
-
-const enc = (s) =>
-  encodeURIComponent(String(s)).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
-const buildQuery = (params) =>
-  Object.keys(params).sort().map((k) => `${enc(k)}=${enc(params[k])}`).join('&');
-
-function oauthHeader({ method, url, params = {}, creds, nonce, timestamp }) {
-  const oauth = {
-    oauth_consumer_key: creds.consumerKey,
-    oauth_nonce: nonce || crypto.randomBytes(16).toString('hex'),
-    oauth_signature_method: 'HMAC-SHA1',
-    oauth_timestamp: String(timestamp || Math.floor(Date.now() / 1000)),
-    oauth_token: creds.token,
-    oauth_version: '1.0'
-  };
-  const base = [method.toUpperCase(), enc(url), enc(buildQuery({ ...params, ...oauth }))].join('&');
-  const key = `${enc(creds.consumerSecret)}&${enc(creds.tokenSecret)}`;
-  oauth.oauth_signature = crypto.createHmac('sha1', key).update(base).digest('base64');
-  return 'OAuth ' + Object.keys(oauth).sort().map((k) => `${enc(k)}="${enc(oauth[k])}"`).join(', ');
-}
+let adsVersionCache = null; // the Ads site currently uses 11; others are tried only if 11 is rejected
 
 class TwitterClient {
   constructor(authToken, ct0, adsAccountId) {
@@ -93,13 +73,11 @@ class TwitterClient {
     this.adsAccountId = (adsAccountId || '').trim();
     this.cookieHeader = `auth_token=${this.authToken}; ct0=${this.ct0};`;
 
-    this.creds = {
-      consumerKey: (process.env.TWITTER_API_KEY || '').trim(),
-      consumerSecret: (process.env.TWITTER_API_SECRET || '').trim(),
-      token: (process.env.TWITTER_ACCESS_TOKEN || '').trim(),
-      tokenSecret: (process.env.TWITTER_ACCESS_TOKEN_SECRET || '').trim()
-    };
-    this.hasOAuth = Object.values(this.creds).every(Boolean);
+    // The Ads site uses its own public app bearer (the "authorization" header on ads-api.x.com requests).
+    // Copy the value after "Bearer " from your DevTools capture into TWITTER_ADS_BEARER.
+    this.adsBearer = (process.env.TWITTER_ADS_BEARER || '').trim().replace(/^Bearer\s+/i, '');
+    // Optional: extra cookies (e.g. "twid=u%3D123") only if auth_token + ct0 alone are rejected.
+    this.extraCookies = (process.env.TWITTER_COOKIE_EXTRA || '').trim();
 
     this.defaultHeaders = {
       'Authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
@@ -129,50 +107,71 @@ class TwitterClient {
   }
 
   _requireAds() {
-    if (!this.hasOAuth) {
+    if (!this.adsBearer) {
       throw new Error(
-        'Creating the Website Card needs X Ads API credentials: set TWITTER_API_KEY, TWITTER_API_SECRET, ' +
-        'TWITTER_ACCESS_TOKEN and TWITTER_ACCESS_TOKEN_SECRET.'
+        'TWITTER_ADS_BEARER is not set. Copy the value after "Bearer " from the authorization header of an ' +
+        'ads-api.x.com request in DevTools (it is the Ads site\'s public app token, not one of your cookies).'
       );
     }
-    if (!this.adsAccountId) {
-      throw new Error('TWITTER_ADS_ACCOUNT_ID is not set (use the Ads account ID, e.g. 18ce55xmjw6).');
-    }
+    if (!this.adsAccountId) throw new Error('TWITTER_ADS_ACCOUNT_ID is not set (e.g. 18ce55xmytz).');
+    if (!this.authToken || !this.ct0) throw new Error('TWITTER_AUTH_TOKEN / TWITTER_CT0 are not set.');
   }
 
-  async _oauthRequest(method, baseUrl, params, label) {
-    const query = buildQuery(params);
+  _adsHeaders(hasBody) {
+    return {
+      'Authorization': `Bearer ${this.adsBearer}`,
+      'x-csrf-token': this.ct0,
+      'x-twitter-auth-type': 'OAuth2Session',
+      'x-twitter-active-user': 'yes',
+      'User-Agent': this.defaultHeaders['User-Agent'],
+      'Origin': 'https://ads.x.com',
+      'Referer': 'https://ads.x.com/',
+      'Accept': 'application/json',
+      'Cookie': this.cookieHeader + (this.extraCookies ? ` ${this.extraCookies}` : ''),
+      ...(hasBody ? { 'Content-Type': 'application/json' } : {})
+    };
+  }
+
+  /** One Ads-site call using the web session. JSON body for POST. */
+  async _adsCall(method, url, body, label) {
     try {
       const res = await axios.request({
         method,
-        url: query ? `${baseUrl}?${query}` : baseUrl,
-        headers: { Authorization: oauthHeader({ method, url: baseUrl, params, creds: this.creds }) },
+        url,
+        data: body,
+        headers: this._adsHeaders(body !== undefined),
         timeout: 30000
       });
       return res.data;
     } catch (err) {
-      throw this._wrapError(err, label);
+      const e = this._wrapError(err, label);
+      if (typeof err.response?.data === 'string' && /cloudflare|just a moment/i.test(err.response.data)) {
+        e.message += ' [Cloudflare challenge: the Ads host rejected a server-side request; see notes]';
+      }
+      throw e;
     }
   }
 
-  /** Ads API call with version negotiation. Only "version not available" errors trigger a retry. */
-  async _adsRequest(method, path, params, label) {
+  /** Version negotiation: tries 11 (what the Ads site uses) first; only "version not available" errors retry. */
+  async _adsRequest(method, path, body, label) {
     const norm = (v) => String(v || '').trim().split('.')[0];
     const queue = [];
     const tried = new Set();
     const enqueue = (v, front = false) => {
       v = norm(v);
-      if (!/^\d+$/.test(v) || tried.has(v) || queue.includes(v)) return;
+      if (!/^\d+$/.test(v) || tried.has(v)) return;
+      const i = queue.indexOf(v);
+      if (i !== -1) { if (!front) return; queue.splice(i, 1); }
       front ? queue.unshift(v) : queue.push(v);
     };
-    [adsVersionCache, process.env.TWITTER_ADS_API_VERSION, 12, 13, 11, 10].forEach((v) => enqueue(v));
+    [adsVersionCache, process.env.TWITTER_ADS_API_VERSION, 11, 12, 13, 10].forEach((v) => enqueue(v));
 
     let lastErr;
     while (queue.length) {
       const v = queue.shift();
       tried.add(v);
       try {
-        const data = await this._oauthRequest(method, `${ADS_HOST}/${v}${path}`, params, label);
+        const data = await this._adsCall(method, `${ADS_HOST}/${v}${path}`, body, label);
         adsVersionCache = v;
         return data;
       } catch (err) {
@@ -181,7 +180,7 @@ class TwitterClient {
         enqueue(err.response?.headers?.['x-current-api-version'], true);
       }
     }
-    throw new Error(`${lastErr.message} (tried Ads API versions: ${[...tried].join(', ')}). Set TWITTER_ADS_API_VERSION to the version your account supports.`);
+    throw new Error(`${lastErr.message} (tried Ads versions: ${[...tried].join(', ')})`);
   }
 
   /**
@@ -338,40 +337,46 @@ class TwitterClient {
     return mediaId;
   }
 
-  /** Add the video to the Ads Media Library (a card can only use library videos). Errors are surfaced. */
+  /**
+   * Add the video to the Ads Media Library. Not yet verified against a capture (the card request was);
+   * so a failure here is logged but does not block the upload. If the card step then fails because the
+   * video is missing from the library, capture the library request from ads.x.com and send it over.
+   */
   async addToAdsMediaLibrary(mediaId, title) {
     this._requireAds();
-    return this._adsRequest(
-      'POST',
-      `/accounts/${this.adsAccountId}/media_library`,
-      { media_key: `13_${mediaId}`, media_category: 'AMPLIFY_VIDEO', name: String(title || `video-${mediaId}`).slice(0, 100) },
-      'Adding video to the Ads Media Library'
-    );
+    try {
+      return await this._adsRequest(
+        'POST',
+        `/accounts/${this.adsAccountId}/media_library?media_key=13_${mediaId}&media_category=AMPLIFY_VIDEO&name=${encodeURIComponent(String(title || `video-${mediaId}`).slice(0, 100))}`,
+        undefined,
+        'Adding video to the Ads Media Library'
+      );
+    } catch (err) {
+      console.warn(`[MediaLibrary] ${err.message}`);
+      return { ok: false, error: err.message };
+    }
   }
 
-  /** Create the Video Website Card (the "Watch full video / from site.com" layout). Returns { card_uri }. */
+  /** Create the Video Website Card exactly as the Ads site does (JSON components). Returns { card_uri }. */
   async createVideoWebsiteCard(mediaId, headline, websiteUrl) {
     this._requireAds();
-    const res = await this._adsRequest(
-      'POST',
-      `/accounts/${this.adsAccountId}/cards/video_website`,
-      {
-        name: `Share2X ${headline}`.slice(0, 80),
-        title: headline.slice(0, 70),
-        media_key: `13_${mediaId}`,
-        website_url: websiteUrl
-      },
-      'Creating the Website Card'
-    );
+    const body = {
+      name: `Share2X ${Date.now()}`,
+      components: [
+        { type: 'MEDIA', media_key: `13_${mediaId}` },
+        { type: 'DETAILS', title: headline.slice(0, 70), destination: { type: 'WEBSITE', url: websiteUrl } }
+      ]
+    };
+    const res = await this._adsRequest('POST', `/accounts/${this.adsAccountId}/cards`, body, 'Creating the Website Card');
     if (!res?.data?.card_uri) throw new Error('Creating the Website Card returned no card_uri.');
     return res.data;
   }
 
-  /** Credential check used by /api/diagnose. */
+  /** Credential check used by /api/diagnose: lists one card to prove the session + bearer are accepted. */
   async checkAdsAccess() {
     this._requireAds();
-    const res = await this._adsRequest('GET', `/accounts/${this.adsAccountId}`, {}, 'Checking Ads account access');
-    return { id: res.data?.id, name: res.data?.name, adsApiVersion: adsVersionCache };
+    const res = await this._adsRequest('GET', `/accounts/${this.adsAccountId}/cards?count=1`, undefined, 'Checking Ads access');
+    return { ok: true, adsApiVersion: adsVersionCache, sampleCards: Array.isArray(res?.data) ? res.data.length : 0 };
   }
 
   /**
@@ -464,5 +469,4 @@ class TwitterClient {
 }
 
 module.exports = TwitterClient;
-module.exports.oauthHeader = oauthHeader;
-    
+                  
