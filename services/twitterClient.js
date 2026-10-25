@@ -39,7 +39,7 @@ function getQueryIdFromAgentTwitterClient() {
         let st;
         try { st = fs.statSync(p); } catch { continue; }
         if (st.isDirectory() && f !== 'node_modules') walk(p, depth + 1);
-        else if (st.isFile() && f.endsWith('.js') && st.size < 5 * 1024 * 1024) files.push(p);
+        else if (st.isFile() && /\.(c|m)?js$/.test(f) && st.size < 5 * 1024 * 1024) files.push(p);
       }
     };
     walk(dir, 0);
@@ -65,6 +65,36 @@ function getQueryIdFromAgentTwitterClient() {
  */
 const ADS_HOST = 'https://ads-api.x.com';
 let adsVersionCache = null; // the Ads site currently uses 11; others are tried only if 11 is rejected
+
+/**
+ * Turn whatever X returned into the plain message a person should see.
+ * e.g. 'Authorization: This request looks like it might be automated... Please try again later. (226)'
+ *   -> 'Authorization: This request looks like it might be automated... Please try again later.'
+ * Full technical detail (HTTP status, queryId, card_uri) goes to the server log instead.
+ */
+function xErrorText(e) {
+  const d = e?.response?.data;
+  let raw =
+    d?.errors?.[0]?.message ||
+    d?.error?.message ||
+    (typeof d?.error === 'string' ? d.error : '') ||
+    d?.message ||
+    d?.detail ||
+    (typeof d === 'string' ? d : '') ||
+    e?.message ||
+    '';
+  return String(raw);
+}
+
+function cleanXMessage(raw) {
+  return String(raw)
+    .replace(/<[^>]*>/g, ' ')            // stray HTML
+    .replace(/\\n|\r?\n/g, ' ')          // escaped or real newlines
+    .replace(/^[\s"']+|[\s"']+$/g, '')    // wrapping quotes/space
+    .replace(/\s*\(\d{1,4}\)\s*$/, '')    // trailing X error code such as (226)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 class TwitterClient {
   constructor(authToken, ct0, adsAccountId) {
@@ -190,16 +220,29 @@ class TwitterClient {
    * Returns null on total failure and fills this._scrapeNote with why.
    */
   async resolveCreateTweetQueryId() {
+    // 0. Explicit override: always works, even if the package is missing from the serverless bundle.
+    const forced = (process.env.TWITTER_CREATETWEET_QUERY_ID || '').trim();
+    if (/^[a-zA-Z0-9_-]{10,}$/.test(forced)) {
+      this._queryIdSource = 'env TWITTER_CREATETWEET_QUERY_ID';
+      return forced;
+    }
+
     const pkg = getQueryIdFromAgentTwitterClient();
+    this._pkgNote = pkg.note;
     if (pkg.id) {
+      this._queryIdSource = `agent-twitter-client (${pkg.note})`;
       console.log(`[GraphQL] CreateTweet queryId from agent-twitter-client (${pkg.note}): ${pkg.id}`);
       return pkg.id;
     }
     console.warn(`[GraphQL] agent-twitter-client scan failed: ${pkg.note}`);
 
     const scraped = await this.getLiveCreateTweetQueryId();
-    if (scraped) return scraped;
+    if (scraped) {
+      this._queryIdSource = 'live x.com bundle scrape';
+      return scraped;
+    }
 
+    this._queryIdSource = null;
     return null;
   }
 
@@ -394,8 +437,9 @@ class TwitterClient {
     const queryId = await this.resolveCreateTweetQueryId();
     if (!queryId) {
       throw new Error(
-        'Could not resolve a live CreateTweet queryId. ' +
-        `Bundle scrape: ${this._scrapeNote}. Run "npm install agent-twitter-client@latest" and retry.`
+        'Could not resolve the CreateTweet queryId. ' +
+        `Package scan: ${this._pkgNote}. Live scrape: ${this._scrapeNote}. ` +
+        'Fix: set TWITTER_CREATETWEET_QUERY_ID (see .env.example), or make sure vercel.json includes node_modules/agent-twitter-client.'
       );
     }
 
@@ -459,14 +503,15 @@ class TwitterClient {
     }
 
     const status = lastError?.response?.status;
-    const body = JSON.stringify(lastError?.response?.data ?? lastError?.message ?? '').slice(0, 300);
-    const err = new Error(
-      `Card created (${card.card_uri}) but CreateTweet failed (HTTP ${status || 'network'}): ${body} [queryId=${queryId}]`
+    const rawMessage = xErrorText(lastError);
+    console.error(
+      `[Publish] CreateTweet failed after card ${card.card_uri} was created: HTTP ${status || 'n/a'}, queryId=${queryId}, message=${rawMessage}`
     );
+    const err = new Error(cleanXMessage(rawMessage) || 'X rejected the post. Please try again.');
     err.response = lastError?.response;
+    err.cardUri = card.card_uri;
     throw err;
   }
 }
 
 module.exports = TwitterClient;
-                  
