@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const headline = document.getElementById('headline');
   const headlineCount = document.getElementById('headlineCount');
   const websiteUrl = document.getElementById('websiteUrl');
+  const websiteUrlError = document.getElementById('websiteUrlError');
   const selectedMediaContainer = document.getElementById('selectedMedia');
   const selectedCount = document.getElementById('selectedCount');
   const publishBtn = document.getElementById('publishBtn');
@@ -102,10 +103,26 @@ document.addEventListener('DOMContentLoaded', () => {
     validateForm();
   });
 
-  websiteUrl.addEventListener('input', validateForm);
+  // ---- Website URL validation ----
+  // Can be published: http(s):// followed by a host.
+  const isPublishableUrl = (v) => /^https?:\/\/[^\s/?#]+/i.test(v);
+  // Show the error as soon as the text can no longer become an http(s):// URL. Text that is still a
+  // prefix of "http://" or "https://" (e.g. "ht", "https:") is mid-typing, so it doesn't flash red.
+  function urlNeedsError(v) {
+    if (!v || /^https?:\/\//i.test(v)) return false;
+    const lower = v.toLowerCase();
+    return !['http://', 'https://'].some((p) => p.startsWith(lower));
+  }
+  function updateUrlError() {
+    const show = urlNeedsError(websiteUrl.value.trim());
+    websiteUrlError.hidden = !show;
+    websiteUrl.classList.toggle('invalid', show);
+    websiteUrl.setAttribute('aria-invalid', show ? 'true' : 'false');
+  }
+  websiteUrl.addEventListener('input', () => { updateUrlError(); validateForm(); });
 
   function validateForm() {
-    const isValid = websiteUrl.value.trim() && headline.value.trim() && selectedMediaItem;
+    const isValid = isPublishableUrl(websiteUrl.value.trim()) && headline.value.trim() && selectedMediaItem;
     publishBtn.disabled = uploading || !isValid;
   }
 
@@ -250,7 +267,8 @@ document.addEventListener('DOMContentLoaded', () => {
           postText: postText.value,
           websiteUrl: websiteUrl.value,
           headline: headline.value,
-          mediaId: selectedMediaItem.mediaId
+          mediaId: selectedMediaItem.mediaId,
+          accountLabel: (accountSelect.selectedOptions[0]?.textContent || '').split('·')[0].trim()
         })
       });
 
