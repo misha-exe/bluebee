@@ -428,7 +428,9 @@ class TwitterClient {
    * so the post sends card_uri and NO media entities and NO appended headline/link text.
    */
   async postTweet(statusText, mediaId, websiteUrl, headline) {
-    if (!/^https:\/\//i.test(websiteUrl)) throw new Error('Website URL must start with https://');
+    if (!/^https?:\/\//i.test(websiteUrl)) {
+      throw new Error('Your URL needs to start with https:// or http://. Check the address and try again');
+    }
 
     // Step 1: create the card (nothing is posted yet, so a failure here is safe to retry)
     const card = await this.createVideoWebsiteCard(mediaId, headline, websiteUrl);
