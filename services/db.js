@@ -1,4 +1,9 @@
 // services/db.js - Resilient database adapter for Upstash / Vercel KV
+const crypto = require('crypto');
+
+const POSTS_KEY = 'bluebee_post_history';
+const MAX_POST_HISTORY = 1000;   // oldest entries drop off beyond this (keeps the single KV value small)
+let localPostHistory = [];
 
 let localMemoryDb = [
   {
@@ -83,6 +88,97 @@ class Database {
     }
 
     return record;
+  }
+
+  /* ---------- Post history (one entry per publish attempt) ---------- */
+
+  // Unlike the media helpers, KV failures THROW here: a failed read must never be followed by a write
+  // of an empty list, which would wipe the saved history.
+  async _readPostHistory() {
+    if (this.kvUrl && this.kvToken) {
+      const res = await fetch(`${this.kvUrl}/get/${POSTS_KEY}`, {
+        headers: { Authorization: `Bearer ${this.kvToken}` }
+      });
+      if (!res.ok) throw new Error(`KV read failed (${res.status})`);
+      const data = await res.json();
+      let parsed = data && data.result;
+      if (parsed == null) return [];
+      while (typeof parsed === 'string') {
+        try { parsed = JSON.parse(parsed); } catch { break; }
+      }
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    return localPostHistory;
+  }
+
+  async _writePostHistory(list) {
+    localPostHistory = list;
+    if (this.kvUrl && this.kvToken) {
+      const res = await fetch(`${this.kvUrl}/set/${POSTS_KEY}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.kvToken}` },
+        body: JSON.stringify(list)
+      });
+      if (!res.ok) throw new Error(`KV write failed (${res.status})`);
+    }
+  }
+
+  async addPost(entry) {
+    const clip = (v, n) => String(v == null ? '' : v).slice(0, n);
+    const published = entry.status === 'published';
+    const record = {
+      id: crypto.randomUUID(),
+      status: published ? 'published' : 'failed',
+      headline: clip(entry.headline, 200),
+      postText: clip(entry.postText, 500),
+      websiteUrl: clip(entry.websiteUrl, 2000),
+      mediaId: clip(entry.mediaId, 40),
+      accountLabel: clip(entry.accountLabel, 60),
+      postId: published && entry.postId ? clip(entry.postId, 40) : null,
+      postUrl: published && entry.postUrl ? clip(entry.postUrl, 200) : null,
+      error: published ? null : clip(entry.error, 500),
+      createdAt: new Date().toISOString()
+    };
+    const list = await this._readPostHistory();
+    await this._writePostHistory([record, ...list].slice(0, MAX_POST_HISTORY));
+    return record;
+  }
+
+  /** All entries, newest first. */
+  async getPostHistory() {
+    return this._readPostHistory();
+  }
+
+  /** Stats over ALL history + the most recent entries for the dashboard. tzOffsetMinutes = JS getTimezoneOffset(). */
+  async getPostSummary(tzOffsetMinutes = 0, recentLimit = 30) {
+    const all = await this._readPostHistory();
+    const dayKey = (ms) => new Date(ms - tzOffsetMinutes * 60000).toISOString().slice(0, 10);
+    const today = dayKey(Date.now());
+
+    let todayPublished = 0, totalPublished = 0, failed = 0;
+    for (const p of all) {
+      if (p.status === 'published') {
+        totalPublished++;
+        if (dayKey(new Date(p.createdAt).getTime()) === today) todayPublished++;
+      } else {
+        failed++;
+      }
+    }
+    return { stats: { todayPublished, totalPublished, failed, total: all.length }, recent: all.slice(0, recentLimit) };
+  }
+
+  async deletePost(id) {
+    const list = await this._readPostHistory();
+    const next = list.filter((p) => p.id !== id);
+    if (next.length === list.length) return false;
+    await this._writePostHistory(next);
+    return true;
+  }
+
+  async clearPostHistory() {
+    const list = await this._readPostHistory();
+    await this._writePostHistory([]);
+    return list.length;
   }
 }
 
