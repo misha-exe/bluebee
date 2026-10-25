@@ -3,23 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Composer · BlueBee</title>
+  <title>Composer · Bluebee</title>
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body class="dashboard-body">
   <div class="app-frame">
     <!-- Sidebar -->
-    <aside class="sidebar" id="sidebar" aria-hidden="true">
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand">
-        <a href="/"><span><strong>BlueBee</strong></span></a>
+        <a href="/"><span><strong>Bluebee</strong></span></a>
         <button type="button" class="sidebar-close" id="sidebarClose" aria-label="Close navigation">×</button>
       </div>
       <nav class="sidebar-nav">
         <div class="nav-section">
           <span>Workspace</span>
-          <a href="/"><b class="nav-icon">⌂</b>Dashboard</a>
+          <a href="/dashboard.html"><b class="nav-icon">⌂</b>Dashboard</a>
           <a class="active" href="/"><b class="nav-icon">＋</b>Composer</a>
-          <a href="#"><b class="nav-icon">≡</b>Posts</a>
+          <a href="/posts.html"><b class="nav-icon">≡</b>Posts</a>
         </div>
       </nav>
       <div class="sidebar-user">
@@ -67,7 +67,8 @@
             </label>
 
             <label>Website URL
-              <input id="websiteUrl" autocomplete="off" type="url" placeholder="https://hai8g.com">
+              <input id="websiteUrl" autocomplete="off" type="url" placeholder="https://hai8g.com" aria-describedby="websiteUrlError" aria-invalid="false">
+              <small class="field-error" id="websiteUrlError" role="alert" hidden>Your URL needs to start with https:// or http://. Check the address and try again</small>
             </label>
 
             <label>Headline <span class="counter" id="headlineCount">0/70</span>
