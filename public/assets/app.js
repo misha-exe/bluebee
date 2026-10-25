@@ -20,6 +20,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const uploadUrlBtn = document.getElementById('uploadUrlBtn');
   const mediaGrid = document.getElementById('mediaGrid');
   const refreshBtn = document.getElementById('refreshBtn');
+  const loadMoreBtn = document.getElementById('loadMoreBtn');
+  const accountSelect = document.getElementById('accountSelect');
+  // NOTE: mediaSearch / searchBtn are intentionally never locked.
+
+  let uploading = false;
+  let toastTimer = null;
 
   const toast = document.getElementById('toast');
   const menuToggle = document.getElementById('menuToggle');
@@ -57,10 +63,33 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch {}
   };
 
-  function showToast(msg, isError = false) {
+  // link (optional): { href, text }. Built with DOM nodes, never innerHTML, so nothing is injected.
+  function showToast(msg, isError = false, link = null) {
     toast.textContent = msg;
+    if (link && link.href) {
+      toast.appendChild(document.createTextNode(' '));
+      const a = document.createElement('a');
+      a.href = link.href;
+      a.textContent = link.text || 'View Post';
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      toast.appendChild(a);
+    }
     toast.className = `toast show ${isError ? 'error' : ''}`;
-    setTimeout(() => { toast.className = 'toast'; }, 5000);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.className = 'toast'; }, link ? 10000 : 5000);
+  }
+
+  // Disable everything except the search bar while a video is uploading (prevents conflicting operations).
+  function setUploading(flag) {
+    uploading = flag;
+    [accountSelect, postText, websiteUrl, headline, videoFile, uploadVideoBtn, videoUrl, uploadUrlBtn, refreshBtn, loadMoreBtn]
+      .forEach((el) => { if (el) el.disabled = flag; });
+    const clearBtn = document.getElementById('clearSelected');
+    if (clearBtn) clearBtn.disabled = flag;
+    mediaGrid.querySelectorAll('button').forEach((b) => { b.disabled = flag; });
+    document.body.classList.toggle('is-uploading', flag);
+    validateForm();
   }
 
   postText.addEventListener('input', () => {
@@ -77,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function validateForm() {
     const isValid = websiteUrl.value.trim() && headline.value.trim() && selectedMediaItem;
-    publishBtn.disabled = !isValid;
+    publishBtn.disabled = uploading || !isValid;
   }
 
   async function loadMedia() {
@@ -110,6 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const btn = document.createElement('button');
       btn.className = `media-card ${selectedMediaItem && selectedMediaItem.mediaId === item.mediaId ? 'selected' : ''}`;
       btn.setAttribute('data-i', item.id || index);
+      btn.disabled = uploading;
       btn.innerHTML = `
         <img src="${item.thumbnail}" alt="${item.name}">
         <span class="play">▶</span>
@@ -135,6 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <button type="button" id="clearSelected">×</button>
     `;
 
+    document.getElementById('clearSelected').disabled = uploading;
     document.getElementById('clearSelected').addEventListener('click', (e) => {
       e.stopPropagation();
       selectedMediaItem = null;
@@ -148,57 +179,62 @@ document.addEventListener('DOMContentLoaded', () => {
     validateForm();
   }
 
+  // Shared upload flow: lock the form, upload, then (in one step) clear the source field,
+  // unlock the form and show the success popup.
+  async function runUpload(doRequest) {
+    if (uploading) return;
+    setUploading(true);
+    try {
+      const data = await doRequest();
+
+      mediaList.unshift(data.media);
+      localStorage.setItem('share2x_db_media', JSON.stringify(mediaList));
+      renderMediaGrid();
+      selectMedia(data.media);
+
+      videoUrl.value = '';
+      videoFile.value = '';
+      setUploading(false);
+      showToast('Video added to the Ads Media Library and selected');
+    } catch (err) {
+      // On failure keep the URL/file so it can be retried, but unlock the form.
+      setUploading(false);
+      showToast(err.message, true);
+    }
+  }
+
   // URL Upload
-  uploadUrlBtn.addEventListener('click', async () => {
+  uploadUrlBtn.addEventListener('click', () => {
     const url = videoUrl.value.trim();
     if (!url) return showToast('Enter a valid video URL', true);
 
-    try {
+    runUpload(async () => {
       const res = await fetch('/api/upload-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ videoUrl: url, clientId })
       });
-      const data = await parseResponse(res);
-
-      // Prepend newly uploaded item directly to memory and local storage
-      mediaList.unshift(data.media);
-      localStorage.setItem('share2x_db_media', JSON.stringify(mediaList));
-      renderMediaGrid();
-
-      // Auto-select the newly added video
-      selectMedia(data.media);
-      showToast('Video added to the Ads Media Library and selected');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+      return parseResponse(res);
+    });
   });
 
   // Direct File Upload
-  uploadVideoBtn.addEventListener('click', async () => {
-    if (!videoFile.files[0]) return showToast('Select a video file to upload', true);
+  uploadVideoBtn.addEventListener('click', () => {
+    const file = videoFile.files[0];
+    if (!file) return showToast('Select a video file to upload', true);
 
     const formData = new FormData();
-    formData.append('video', videoFile.files[0]);
+    formData.append('video', file);
     formData.append('clientId', clientId);
 
     uploadStatus.textContent = 'Preparing upload...';
     uploadProgress.hidden = false;
     uploadProgress.value = 5;
 
-    try {
+    runUpload(async () => {
       const res = await fetch('/api/upload-file', { method: 'POST', body: formData });
-      const data = await parseResponse(res);
-
-      mediaList.unshift(data.media);
-      localStorage.setItem('share2x_db_media', JSON.stringify(mediaList));
-      renderMediaGrid();
-
-      selectMedia(data.media);
-      showToast('Video added to the Ads Media Library and selected');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+      return parseResponse(res);
+    });
   });
 
   // Publish
@@ -219,11 +255,16 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       const data = await parseResponse(res);
-      showToast(data.message || 'Website Card posted successfully!');
+      const link = data.postUrl ? { href: data.postUrl, text: 'View Post' } : null;
+      showToast(data.message || 'Website Card posted successfully!', false, link);
+
+      // Clear ONLY the post text and the selected media. Headline and website URL stay for the next post.
       postText.value = '';
-      headline.value = '';
       postCount.textContent = '0/280';
-      headlineCount.textContent = '0/70';
+      selectedMediaItem = null;
+      selectedCount.textContent = 'None selected';
+      selectedMediaContainer.innerHTML = '<p>Select one compatible square video.</p>';
+      renderMediaGrid();
     } catch (err) {
       showToast(err.message, true);
     } finally {
