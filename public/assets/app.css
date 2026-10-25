@@ -162,3 +162,62 @@ textarea { min-height: 135px; resize: vertical; }
 input:disabled, textarea:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
 .media-card:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 .toast a { color: inherit; text-decoration: underline; font-weight: 700; }
+
+/* ---------- Website URL validation ---------- */
+input.invalid, input.invalid:focus { border-color: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,.16); }
+.field-error { display: block; margin-top: 6px; color: var(--red); font-size: 11px; font-weight: 500; line-height: 1.45; }
+.field-error[hidden] { display: none; }
+
+/* ---------- Dashboard ---------- */
+.stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
+.stat-card { background: var(--white); border: 1px solid var(--line); border-radius: 22px; padding: 24px 26px; box-shadow: var(--shadow); }
+.stat-card h3 { margin: 0; font-size: 14px; font-weight: 650; color: var(--muted); }
+.stat-value { font-size: 46px; font-weight: 800; letter-spacing: -.03em; line-height: 1; margin: 16px 0 12px; }
+.stat-card p { margin: 0; color: var(--muted); font-size: 13px; }
+
+.activity-panel { border-radius: 22px; padding: 26px; }
+.activity-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.activity-head h2 { margin: 6px 0 0; font-size: 22px; letter-spacing: -.02em; }
+.view-all { color: var(--muted); font-weight: 650; text-decoration: underline; white-space: nowrap; }
+.view-all:hover { color: var(--ink); }
+.activity-list { list-style: none; margin: 0; padding: 0; }
+.activity-item { display: flex; gap: 16px; padding: 20px 0; border-top: 1px solid var(--line); }
+.activity-item:first-child { border-top: 0; }
+.status-icon { flex: none; width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center; font-size: 20px; font-weight: 800; }
+.status-icon.published { background: var(--green-bg); color: var(--green); }
+.status-icon.failed { background: var(--red-bg); color: var(--red); }
+.activity-body { flex: 1; min-width: 0; }
+.activity-title { font-size: 16px; font-weight: 750; overflow-wrap: anywhere; }
+.activity-meta { margin-top: 4px; color: var(--muted); font-size: 13px; }
+.post-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.badge { display: inline-block; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 750; }
+.badge.published { background: var(--green-bg); color: var(--green); }
+.badge.failed { background: var(--red-bg); color: var(--red); }
+.empty-state { text-align: center; color: var(--muted); padding: 34px 10px; line-height: 1.6; }
+.empty-state[hidden] { display: none; }
+
+/* ---------- Posts page ---------- */
+.page-head.with-actions { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.button.danger { background: #2a1317; color: var(--red); border-color: #5a232b; }
+.button.danger:hover { background: #3a1a1f; }
+.button.small { padding: 7px 13px; font-size: 12px; }
+.post-foot .button.danger { margin-left: auto; }
+.post-text { margin: 10px 0 0; line-height: 1.5; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.post-url { margin: 6px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.post-error { margin: 10px 0 0; padding: 9px 11px; border-radius: 9px; background: var(--red-bg); color: var(--red); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.post-link { color: var(--ink); font-weight: 700; font-size: 13px; text-decoration: underline; }
+
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.62); display: grid; place-items: center; padding: 20px; z-index: 200; }
+.modal-backdrop[hidden] { display: none; }
+.modal { width: 100%; max-width: 420px; background: var(--white); border: 1px solid var(--line); border-radius: 18px; padding: 24px; box-shadow: var(--shadow); }
+.modal h3 { margin: 0 0 10px; font-size: 18px; }
+.modal p { margin: 0; color: var(--muted); line-height: 1.55; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+
+@media(max-width: 850px) {
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .stat-card { padding: 20px 18px; border-radius: 20px; }
+  .stat-value { font-size: 38px; }
+  .activity-panel { padding: 20px; }
+  .activity-item { gap: 13px; }
+       }
