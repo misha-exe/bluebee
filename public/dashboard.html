@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Dashboard · Bluebee</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="dashboard-body">
+  <div class="app-frame">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <a href="/"><span><strong>Bluebee</strong></span></a>
+        <button type="button" class="sidebar-close" id="sidebarClose" aria-label="Close navigation">×</button>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <span>Workspace</span>
+          <a class="active" href="/dashboard.html"><b class="nav-icon">⌂</b>Dashboard</a>
+          <a href="/"><b class="nav-icon">＋</b>Composer</a>
+          <a href="/posts.html"><b class="nav-icon">≡</b>Posts</a>
+        </div>
+      </nav>
+      <div class="sidebar-user">
+        <div class="user-avatar">R</div>
+        <div>
+          <strong>Rudith</strong>
+          <small>Editor</small>
+        </div>
+        <a href="#" title="Log out">↗</a>
+      </div>
+    </aside>
+
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Main Content -->
+    <div class="main-column">
+      <button type="button" class="menu-toggle floating-menu" id="menuToggle" aria-label="Open navigation">☰</button>
+      <main class="content-shell">
+        <section class="page-head">
+          <div>
+            <h1>Dashboard</h1>
+            <p>A quick look at your Website Card posts.</p>
+          </div>
+        </section>
+
+        <section class="stat-grid" aria-label="Post statistics">
+          <article class="stat-card">
+            <h3>Today’s Post</h3>
+            <div class="stat-value" id="statToday">–</div>
+            <p>Posts created today</p>
+          </article>
+          <article class="stat-card">
+            <h3>Total Posts Published</h3>
+            <div class="stat-value" id="statTotal">–</div>
+            <p>Confirmed timeline posts</p>
+          </article>
+          <article class="stat-card">
+            <h3>Needs attention</h3>
+            <div class="stat-value" id="statFailed">–</div>
+            <p>Failed attempts</p>
+          </article>
+        </section>
+
+        <section class="panel activity-panel">
+          <div class="activity-head">
+            <div>
+              <span class="eyebrow">Recent activity</span>
+              <h2>Your latest posts</h2>
+            </div>
+            <a class="view-all" href="/posts.html">View all</a>
+          </div>
+          <ul class="activity-list" id="activityList" aria-live="polite"></ul>
+          <div class="empty-state" id="activityEmpty">Loading…</div>
+        </section>
+
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </main>
+    </div>
+  </div>
+
+  <script src="/assets/common.js"></script>
+  <script src="/assets/dashboard.js"></script>
+</body>
+</html>

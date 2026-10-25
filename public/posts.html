@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Posts · Bluebee</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="dashboard-body">
+  <div class="app-frame">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <a href="/"><span><strong>Bluebee</strong></span></a>
+        <button type="button" class="sidebar-close" id="sidebarClose" aria-label="Close navigation">×</button>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <span>Workspace</span>
+          <a href="/dashboard.html"><b class="nav-icon">⌂</b>Dashboard</a>
+          <a href="/"><b class="nav-icon">＋</b>Composer</a>
+          <a class="active" href="/posts.html"><b class="nav-icon">≡</b>Posts</a>
+        </div>
+      </nav>
+      <div class="sidebar-user">
+        <div class="user-avatar">R</div>
+        <div>
+          <strong>Rudith</strong>
+          <small>Editor</small>
+        </div>
+        <a href="#" title="Log out">↗</a>
+      </div>
+    </aside>
+
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Main Content -->
+    <div class="main-column">
+      <button type="button" class="menu-toggle floating-menu" id="menuToggle" aria-label="Open navigation">☰</button>
+      <main class="content-shell">
+        <section class="page-head with-actions">
+          <div>
+            <h1>Posts</h1>
+            <p id="postsSubtitle">Every Website Card post you have tried, published or failed.</p>
+          </div>
+          <button type="button" class="button danger" id="deleteAllBtn" disabled>Delete all history</button>
+        </section>
+
+        <section class="panel activity-panel">
+          <ul class="activity-list" id="postsList" aria-live="polite"></ul>
+          <div class="empty-state" id="postsEmpty">Loading…</div>
+        </section>
+
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Delete-all confirmation -->
+  <div class="modal-backdrop" id="confirmModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <h3 id="confirmTitle">Delete all post history?</h3>
+      <p id="confirmText"></p>
+      <div class="modal-actions">
+        <button type="button" class="button secondary" id="confirmCancel">Cancel</button>
+        <button type="button" class="button danger" id="confirmOk">Delete all</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/common.js"></script>
+  <script src="/assets/posts.js"></script>
+</body>
+</html>
