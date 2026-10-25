@@ -148,8 +148,20 @@ router.post('/upload-file', upload.single('video'), async (req, res) => {
 });
 
 // Publish
+const URL_RULE_MESSAGE = 'Your URL needs to start with https:// or http://. Check the address and try again';
+
+// History logging must never break (or change the result of) a publish.
+async function logAttempt(entry) {
+  try {
+    await db.addPost(entry);
+  } catch (err) {
+    console.warn('[History] Could not record post attempt:', err.message);
+  }
+}
+
 router.post('/publish', async (req, res) => {
   const { postText, websiteUrl, headline, mediaId } = req.body;
+  const accountLabel = String(req.body.accountLabel || '').slice(0, 60);
   const authToken = process.env.TWITTER_AUTH_TOKEN;
   const ct0 = process.env.TWITTER_CT0;
   const adsAccountId = process.env.TWITTER_ADS_ACCOUNT_ID;
@@ -157,27 +169,72 @@ router.post('/publish', async (req, res) => {
   if (!websiteUrl || !headline || !mediaId) {
     return res.status(400).json({ error: 'Missing required card fields: websiteUrl, headline, or mediaId.' });
   }
+  if (!/^https?:\/\//i.test(String(websiteUrl).trim())) {
+    return res.status(400).json({ error: URL_RULE_MESSAGE });
+  }
 
   const client = new TwitterClient(authToken, ct0, adsAccountId);
+  const base = { headline, postText, websiteUrl: String(websiteUrl).trim(), mediaId, accountLabel };
 
   try {
     console.log('[Publish] Creating Video Website Card and posting...');
-    const result = await client.postTweet(postText, mediaId, websiteUrl, headline);
+    const result = await client.postTweet(postText, mediaId, String(websiteUrl).trim(), headline);
 
     const postId = result.postId && /^\d+$/.test(String(result.postId)) ? String(result.postId) : null;
+    const postUrl = postId ? `https://x.com/i/status/${postId}` : null;
+    await logAttempt({ ...base, status: 'published', postId, postUrl });
+
     return res.json({
       success: true,
       postId,
-      postUrl: postId ? `https://x.com/i/status/${postId}` : null,
+      postUrl,
       cardUri: result.cardUri,
       message: 'X created the Website Card post.'
     });
   } catch (postErr) {
     console.error('[Publish] failed:', postErr.message, JSON.stringify(postErr.response?.data || {}));
+    await logAttempt({ ...base, status: 'failed', error: postErr.message });
     return res.status(400).json({
       error: postErr.message,
       details: postErr.response?.data
     });
+  }
+});
+
+// ---- Post history ----
+router.get('/posts/summary', async (req, res) => {
+  try {
+    let tz = parseInt(req.query.tz, 10);
+    if (!Number.isFinite(tz) || tz < -840 || tz > 840) tz = 0;
+    return res.json(await db.getPostSummary(tz, 30));
+  } catch (err) {
+    return res.status(500).json({ error: `Could not load post history: ${err.message}` });
+  }
+});
+
+router.get('/posts', async (req, res) => {
+  try {
+    return res.json({ posts: await db.getPostHistory() });
+  } catch (err) {
+    return res.status(500).json({ error: `Could not load post history: ${err.message}` });
+  }
+});
+
+router.delete('/posts/:id', async (req, res) => {
+  try {
+    const removed = await db.deletePost(req.params.id);
+    if (!removed) return res.status(404).json({ error: 'That history entry no longer exists.' });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: `Could not delete the entry: ${err.message}` });
+  }
+});
+
+router.delete('/posts', async (req, res) => {
+  try {
+    return res.json({ success: true, deleted: await db.clearPostHistory() });
+  } catch (err) {
+    return res.status(500).json({ error: `Could not delete post history: ${err.message}` });
   }
 });
 
