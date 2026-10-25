@@ -164,12 +164,13 @@ router.post('/publish', async (req, res) => {
     console.log('[Publish] Creating Video Website Card and posting...');
     const result = await client.postTweet(postText, mediaId, websiteUrl, headline);
 
-    const postId = result.postId || 'posted';
+    const postId = result.postId && /^\d+$/.test(String(result.postId)) ? String(result.postId) : null;
     return res.json({
       success: true,
       postId,
+      postUrl: postId ? `https://x.com/i/status/${postId}` : null,
       cardUri: result.cardUri,
-      message: `X created the Website Card post. View post: https://x.com/i/status/${postId}`
+      message: 'X created the Website Card post.'
     });
   } catch (postErr) {
     console.error('[Publish] failed:', postErr.message, JSON.stringify(postErr.response?.data || {}));
@@ -195,7 +196,9 @@ router.get('/diagnose', async (req, res) => {
   };
   try {
     report.adsAccount = await client.checkAdsAccess();
-    report.ok = true;
+    const qid = await client.resolveCreateTweetQueryId();
+    report.createTweetQueryId = qid ? { ok: true, source: client._queryIdSource } : { ok: false, packageScan: client._pkgNote, liveScrape: client._scrapeNote };
+    report.ok = !!qid;
   } catch (err) {
     report.ok = false;
     report.error = err.message;
