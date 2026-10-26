@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const POSTS_KEY = 'bluebee_post_history';
 const MAX_POST_HISTORY = 1000;   // oldest entries drop off beyond this (keeps the single KV value small)
 let localPostHistory = [];
+const localCounters = new Map();   // key -> { n, exp }
 
 let localMemoryDb = [
   {
@@ -179,6 +180,54 @@ class Database {
     const list = await this._readPostHistory();
     await this._writePostHistory([]);
     return list.length;
+  }
+
+  /* ---------- Small expiring counters (used for sign-in attempt limiting) ---------- */
+
+  async bumpCounter(key, windowSec) {
+    if (this.kvUrl && this.kvToken) {
+      try {
+        const headers = { Authorization: `Bearer ${this.kvToken}` };
+        const res = await fetch(`${this.kvUrl}/incr/${encodeURIComponent(key)}`, { headers });
+        const n = Number((await res.json()).result);
+        if (Number.isFinite(n)) {
+          if (n === 1) await fetch(`${this.kvUrl}/expire/${encodeURIComponent(key)}/${windowSec}`, { headers });
+          return n;
+        }
+      } catch (err) {
+        console.warn('[DB Error] counter bump failed, using memory:', err.message);
+      }
+    }
+    const now = Date.now();
+    const cur = localCounters.get(key);
+    const n = cur && cur.exp > now ? cur.n + 1 : 1;
+    localCounters.set(key, { n, exp: cur && cur.exp > now ? cur.exp : now + windowSec * 1000 });
+    return n;
+  }
+
+  async getCounter(key) {
+    if (this.kvUrl && this.kvToken) {
+      try {
+        const res = await fetch(`${this.kvUrl}/get/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${this.kvToken}` } });
+        const n = Number((await res.json()).result);
+        return Number.isFinite(n) ? n : 0;
+      } catch (err) {
+        console.warn('[DB Error] counter read failed, using memory:', err.message);
+      }
+    }
+    const cur = localCounters.get(key);
+    return cur && cur.exp > Date.now() ? cur.n : 0;
+  }
+
+  async resetCounter(key) {
+    localCounters.delete(key);
+    if (this.kvUrl && this.kvToken) {
+      try {
+        await fetch(`${this.kvUrl}/del/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${this.kvToken}` } });
+      } catch (err) {
+        console.warn('[DB Error] counter reset failed:', err.message);
+      }
+    }
   }
 }
 
