@@ -16,5 +16,8 @@
     "multer": "^1.4.5-lts.1",
     "uuid": "^9.0.1",
     "agent-twitter-client": "latest"
+  },
+  "scripts": {
+    "hash-password": "node scripts/hash-password.js"
   }
 }
