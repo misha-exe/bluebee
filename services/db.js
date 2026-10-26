@@ -5,6 +5,8 @@ const POSTS_KEY = 'bluebee_post_history';
 const MAX_POST_HISTORY = 1000;   // oldest entries drop off beyond this (keeps the single KV value small)
 let localPostHistory = [];
 const localCounters = new Map();   // key -> { n, exp }
+const localProgress = new Map();   // key -> { value, exp }  (fallback when no KV is configured)
+const PROGRESS_TTL_SEC = 600;
 
 let localMemoryDb = [
   {
@@ -228,6 +230,40 @@ class Database {
         console.warn('[DB Error] counter reset failed:', err.message);
       }
     }
+  }
+
+  /* ---------- Upload progress (shared across serverless instances) ---------- */
+
+  async setProgress(id, data) {
+    const key = `bluebee_upload_progress:${id}`;
+    const json = JSON.stringify({ ...data, at: Date.now() });
+    localProgress.set(key, { value: json, exp: Date.now() + PROGRESS_TTL_SEC * 1000 });
+    if (this.kvUrl && this.kvToken) {
+      // SETEX = set + expire in a single call (these update often, so keep it to one round trip)
+      const res = await fetch(`${this.kvUrl}/setex/${encodeURIComponent(key)}/${PROGRESS_TTL_SEC}/${encodeURIComponent(json)}`, {
+        headers: { Authorization: `Bearer ${this.kvToken}` }
+      });
+      if (!res.ok) throw new Error(`KV progress write failed (${res.status})`);
+    }
+  }
+
+  async getProgress(id) {
+    const key = `bluebee_upload_progress:${id}`;
+    if (this.kvUrl && this.kvToken) {
+      try {
+        const res = await fetch(`${this.kvUrl}/get/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${this.kvToken}` } });
+        if (res.ok) {
+          let v = (await res.json()).result;
+          if (v == null) return null;
+          while (typeof v === 'string') { try { v = JSON.parse(v); } catch { return null; } }
+          return v;
+        }
+      } catch (err) {
+        console.warn('[DB Error] progress read failed, using memory:', err.message);
+      }
+    }
+    const cur = localProgress.get(key);
+    return cur && cur.exp > Date.now() ? JSON.parse(cur.value) : null;
   }
 }
 
