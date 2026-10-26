@@ -1,5 +1,4 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const clientId = 'client_' + Math.random().toString(36).substring(2, 9);
   let mediaList = [];
   let selectedMediaItem = null;
 
@@ -53,16 +52,66 @@ document.addEventListener('DOMContentLoaded', () => {
     throw new Error(`Server status ${res.status}: ${htmlText.replace(/<[^>]*>/g, '').trim().substring(0, 100)}`);
   }
 
-  // SSE setup
-  const evtSource = new EventSource(`/api/progress/${clientId}`);
-  evtSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      uploadProgress.hidden = false;
-      uploadProgress.value = data.percent;
-      uploadStatus.textContent = data.status;
-    } catch {}
-  };
+  // ---- Upload progress ----
+  // The bar is shown the instant an upload starts (so it never depends on the server), then fed by polling the
+  // server's progress record. A fresh id per upload means a previous upload's "100%" can never leak into the next.
+  const defaultStatus = uploadStatus.textContent;
+  let shownPercent = 0;
+  let hideTimer = null;
+
+  const newUploadId = () => 'up_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+
+  function startProgress() {
+    clearTimeout(hideTimer);
+    shownPercent = 0;
+    uploadProgress.removeAttribute('value');   // no value = animated "working…" bar until real numbers arrive
+    uploadProgress.hidden = false;
+    uploadStatus.textContent = 'Starting upload…';
+  }
+
+  function applyProgress(status, percent) {
+    const pct = Number(percent);
+    if (!Number.isFinite(pct) || pct < shownPercent) return;   // never move backwards (stale or out-of-order update)
+    shownPercent = pct;
+    uploadProgress.hidden = false;
+    uploadProgress.value = pct;
+    if (status) uploadStatus.textContent = status;
+  }
+
+  function finishProgress(success) {
+    clearTimeout(hideTimer);
+    if (success) {
+      applyProgress('Video added to the Ads Media Library and selected', 100);
+      hideTimer = setTimeout(resetProgress, 1500);   // let the 100% register before the bar goes away
+    } else {
+      resetProgress();
+    }
+  }
+
+  function resetProgress() {
+    uploadProgress.hidden = true;
+    uploadProgress.value = 0;
+    uploadStatus.textContent = defaultStatus;
+    shownPercent = 0;
+  }
+
+  function pollProgress(uploadId) {
+    let stopped = false;
+    let timer = null;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const res = await fetch(`/api/upload-progress/${encodeURIComponent(uploadId)}`, { cache: 'no-store' });
+        if (res.ok && !stopped) {
+          const d = await res.json();
+          if (d && d.status) applyProgress(d.status, d.percent);
+        }
+      } catch { /* a missed poll is harmless; the next one catches up */ }
+      if (!stopped) timer = setTimeout(tick, 700);
+    };
+    timer = setTimeout(tick, 400);
+    return { stop() { stopped = true; clearTimeout(timer); } };
+  }
 
   // link (optional): { href, text }. Built with DOM nodes, never innerHTML, so nothing is injected.
   function showToast(msg, isError = false, link = null) {
@@ -198,9 +247,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Shared upload flow: lock the form, upload, then (in one step) clear the source field,
   // unlock the form and show the success popup.
-  async function runUpload(doRequest) {
+  async function runUpload(uploadId, doRequest) {
     if (uploading) return;
     setUploading(true);
+    startProgress();
+    const poller = pollProgress(uploadId);
     try {
       const data = await doRequest();
 
@@ -209,12 +260,16 @@ document.addEventListener('DOMContentLoaded', () => {
       renderMediaGrid();
       selectMedia(data.media);
 
+      poller.stop();
+      finishProgress(true);
       videoUrl.value = '';
       videoFile.value = '';
       setUploading(false);
       showToast('Video added to the Ads Media Library and selected');
     } catch (err) {
       // On failure keep the URL/file so it can be retried, but unlock the form.
+      poller.stop();
+      finishProgress(false);
       setUploading(false);
       showToast(err.message, true);
     }
@@ -225,11 +280,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const url = videoUrl.value.trim();
     if (!url) return showToast('Enter a valid video URL', true);
 
-    runUpload(async () => {
+    const uploadId = newUploadId();
+    runUpload(uploadId, async () => {
       const res = await fetch('/api/upload-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl: url, clientId })
+        body: JSON.stringify({ videoUrl: url, clientId: uploadId })
       });
       return parseResponse(res);
     });
@@ -240,15 +296,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const file = videoFile.files[0];
     if (!file) return showToast('Select a video file to upload', true);
 
+    const uploadId = newUploadId();
     const formData = new FormData();
+    formData.append('clientId', uploadId);   // before the file, so the server can read it as soon as the form starts arriving
     formData.append('video', file);
-    formData.append('clientId', clientId);
 
-    uploadStatus.textContent = 'Preparing upload...';
-    uploadProgress.hidden = false;
-    uploadProgress.value = 5;
-
-    runUpload(async () => {
+    runUpload(uploadId, async () => {
       const res = await fetch('/api/upload-file', { method: 'POST', body: formData });
       return parseResponse(res);
     });
