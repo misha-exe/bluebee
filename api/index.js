@@ -18,7 +18,6 @@ const upload = multer({
   limits: { fileSize: 4.5 * 1024 * 1024 }
 });
 
-const progressClients = {};
 const router = express.Router();
 
 // ---------- Authentication ----------
@@ -65,22 +64,47 @@ router.get('/session', (req, res) =>
 );
 router.post('/session/touch', (req, res) => res.json({ success: true }));
 
-router.get('/progress/:clientId', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
+// ---------- Upload progress ----------
+// Progress lives in the shared database, NOT in this process's memory. On Vercel the request that performs the
+// upload and the request that asks "how far along is it?" usually run on different server instances, so anything
+// kept in memory (like an open event-stream connection) is invisible to the other one.
+const ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
+const progressChains = new Map();   // per-upload write queue, keeps updates in order
+const lastProgress = new Map();
+const scale = (p, from, to) => from + (Math.max(0, Math.min(100, Number(p) || 0)) / 100) * (to - from);
 
-  const clientId = req.params.clientId;
-  progressClients[clientId] = res;
-  req.on('close', () => delete progressClients[clientId]);
-});
-
-function sendProgress(clientId, status, percent = 0) {
-  if (progressClients[clientId]) {
-    progressClients[clientId].write(`data: ${JSON.stringify({ status, percent })}\n\n`);
+function sendProgress(id, status, percent = 0) {
+  if (!ID_RE.test(String(id || ''))) return Promise.resolve();
+  const pct = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const prev = lastProgress.get(id);
+  const now = Date.now();
+  // Chatty sources (download ticks, upload chunks) are throttled; stage changes and the final 100% never are.
+  if (prev && prev.status === status && pct < 100 && pct - prev.pct < 2 && now - prev.at < 400) {
+    return progressChains.get(id) || Promise.resolve();
   }
+  lastProgress.set(id, { status, pct, at: now });
+  const chain = (progressChains.get(id) || Promise.resolve())
+    .then(() => db.setProgress(id, { status, percent: pct }))
+    .catch((err) => console.warn('[Progress]', err.message));   // progress is cosmetic: never fail an upload over it
+  progressChains.set(id, chain);
+  return chain;
 }
+
+// Make sure the last update is stored before the response goes out (serverless can freeze right after).
+async function endProgress(id) {
+  await (progressChains.get(id) || Promise.resolve());
+  progressChains.delete(id);
+  lastProgress.delete(id);
+}
+
+router.get('/upload-progress/:id', async (req, res) => {
+  if (!ID_RE.test(String(req.params.id || ''))) return res.status(400).json({ error: 'Invalid upload id' });
+  try {
+    return res.json((await db.getProgress(req.params.id)) || {});
+  } catch {
+    return res.json({});
+  }
+});
 
 // GET Media Library from DB
 router.get('/media', async (req, res) => {
@@ -98,17 +122,16 @@ router.post('/upload-url', async (req, res) => {
   const thumbPath = path.join(TMP_DIR, `thumb-${Date.now()}.jpg`);
 
   try {
-    sendProgress(clientId, 'Downloading video from URL', 0);
+    sendProgress(clientId, 'Downloading video from URL', 2);
     await downloadVideo(videoUrl, rawPath, (pct) => {
-      sendProgress(clientId, 'Downloading video from URL', pct);
+      sendProgress(clientId, 'Downloading video from URL', scale(pct, 2, 25));
     });
 
-    sendProgress(clientId, 'Downloading complete', 100);
-    sendProgress(clientId, 'Preparing an 800x800 website card without cropping', 15);
+    sendProgress(clientId, 'Preparing an 800x800 website card without cropping', 28);
     await makeSquare800(rawPath, squarePath);
     await generateThumbnail(squarePath, thumbPath);
 
-    sendProgress(clientId, 'Square video is ready. Starting X upload.', 35);
+    sendProgress(clientId, 'Square video is ready. Starting X upload.', 40);
 
     const authToken = process.env.TWITTER_AUTH_TOKEN;
     const ct0 = process.env.TWITTER_CT0;
@@ -116,10 +139,11 @@ router.post('/upload-url', async (req, res) => {
 
     const client = new TwitterClient(authToken, ct0, adsAccountId);
     const mediaId = await client.uploadMediaChunked(squarePath, (p) => {
-      sendProgress(clientId, `Uploading to X (${p}%)`, p);
+      const overall = scale(p, 40, 85);   // same number as the bar, so the text and the bar always agree
+      sendProgress(clientId, `Uploading to X (${Math.round(overall)}%)`, overall);
     });
 
-    sendProgress(clientId, 'X is processing the video', 85);
+    sendProgress(clientId, 'X is processing the video', 88);
     sendProgress(clientId, 'Adding video to the Ads Media Library', 95);
     await client.addToAdsMediaLibrary(mediaId, path.basename(videoUrl));
 
@@ -136,9 +160,11 @@ router.post('/upload-url', async (req, res) => {
     });
 
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
+    await endProgress(clientId);
     return res.json({ success: true, media: savedRecord });
   } catch (err) {
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
+    await endProgress(clientId);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -153,11 +179,11 @@ router.post('/upload-file', upload.single('video'), async (req, res) => {
   const thumbPath = path.join(TMP_DIR, `thumb-${Date.now()}.jpg`);
 
   try {
-    sendProgress(clientId, 'Preparing an 800x800 website card without cropping', 20);
+    sendProgress(clientId, 'Preparing an 800x800 website card without cropping', 15);
     await makeSquare800(rawPath, squarePath);
     await generateThumbnail(squarePath, thumbPath);
 
-    sendProgress(clientId, 'Square video is ready. Starting X upload.', 50);
+    sendProgress(clientId, 'Square video is ready. Starting X upload.', 40);
 
     const authToken = process.env.TWITTER_AUTH_TOKEN;
     const ct0 = process.env.TWITTER_CT0;
@@ -165,10 +191,11 @@ router.post('/upload-file', upload.single('video'), async (req, res) => {
 
     const client = new TwitterClient(authToken, ct0, adsAccountId);
     const mediaId = await client.uploadMediaChunked(squarePath, (p) => {
-      sendProgress(clientId, `Uploading to X (${p}%)`, p);
+      const overall = scale(p, 40, 85);   // same number as the bar, so the text and the bar always agree
+      sendProgress(clientId, `Uploading to X (${Math.round(overall)}%)`, overall);
     });
 
-    sendProgress(clientId, 'X is processing the video', 85);
+    sendProgress(clientId, 'X is processing the video', 88);
     sendProgress(clientId, 'Adding video to the Ads Media Library', 95);
     await client.addToAdsMediaLibrary(mediaId, req.file.originalname);
 
@@ -185,9 +212,11 @@ router.post('/upload-file', upload.single('video'), async (req, res) => {
     });
 
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
+    await endProgress(clientId);
     return res.json({ success: true, media: savedRecord });
   } catch (err) {
     [rawPath, squarePath, thumbPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
+    await endProgress(clientId);
     return res.status(500).json({ error: err.message });
   }
 });
