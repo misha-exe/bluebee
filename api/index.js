@@ -7,6 +7,7 @@ const fs = require('fs');
 const { TMP_DIR, downloadVideo, makeSquare800, generateThumbnail } = require('../services/videoProcessor');
 const TwitterClient = require('../services/twitterClient');
 const db = require('../services/db');
+const auth = require('../services/auth');
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -19,6 +20,50 @@ const upload = multer({
 
 const progressClients = {};
 const router = express.Router();
+
+// ---------- Authentication ----------
+// Everything below the "requireAuth" line needs a valid, unexpired session cookie.
+router.use(auth.sameOrigin);
+
+router.post('/login', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  if (!auth.isConfigured()) {
+    return res.status(503).json({
+      error: 'Login is not set up on the server yet. Add AUTH_EMAIL, AUTH_PASSWORD_HASH and AUTH_SECRET to the environment variables.',
+      code: 'unconfigured'
+    });
+  }
+
+  const ip = auth.clientIp(req);
+  if (await auth.isLockedOut(ip)) {
+    return res.status(429).json({ error: 'Too many failed sign-in attempts. Please wait 15 minutes and try again.', code: 'locked' });
+  }
+
+  const { email, password } = req.body || {};
+  if (!(await auth.verifyLogin(email, password))) {
+    await auth.recordFailure(ip);
+    await new Promise((r) => setTimeout(r, 400));   // slows down guessing
+    return res.status(401).json({ error: 'Incorrect email or password.' });
+  }
+
+  await auth.clearFailures(ip);
+  const now = Date.now();
+  auth.setSessionCookie(req, res, auth.issueToken(auth.getConfig().email, { iat: now, la: now }), now);
+  return res.json({ success: true, redirect: '/' });
+});
+
+router.post('/logout', (req, res) => {
+  auth.clearSessionCookie(req, res);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ success: true });
+});
+
+router.use(auth.requireAuth);
+
+router.get('/session', (req, res) =>
+  res.json({ authenticated: true, user: req.user, remainingMs: Number(res.getHeader('X-Session-Remaining-Ms')) })
+);
+router.post('/session/touch', (req, res) => res.json({ success: true }));
 
 router.get('/progress/:clientId', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -238,7 +283,7 @@ router.delete('/posts', async (req, res) => {
   }
 });
 
-// Setup check: GET /api/diagnose (remove or protect once everything works)
+// Setup check: GET /api/diagnose (requires sign-in)
 router.get('/diagnose', async (req, res) => {
   const client = new TwitterClient(
     process.env.TWITTER_AUTH_TOKEN,
