@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Sign in · Bluebee</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="auth-brand">
+      <strong>Bluebee</strong>
+    </div>
+    <h1>Welcome back</h1>
+    <p>Sign in to manage your X accounts and Website Card posts.</p>
+
+    <div class="auth-notice" id="authNotice" role="status" hidden></div>
+
+    <form id="loginForm" novalidate>
+      <label>Email
+        <input type="email" id="email" name="email" required autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>
+      </label>
+      <label>Password
+        <div class="password-field">
+          <input type="password" id="password" name="password" required autocomplete="current-password">
+          <button type="button" class="password-toggle" id="passwordToggle" aria-label="Show password" aria-pressed="false">Show</button>
+        </div>
+      </label>
+      <p class="auth-error" id="authError" role="alert" hidden></p>
+      <button class="button" type="submit" id="submitBtn">Sign in</button>
+    </form>
+  </main>
+
+  <script src="/assets/login.js"></script>
+</body>
+</html>
