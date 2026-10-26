@@ -12,5 +12,51 @@
       "source": "/api/(.*)",
       "destination": "/api/index.js"
     }
+  ],
+  "redirects": [
+    {
+      "source": "/",
+      "missing": [
+        {
+          "type": "cookie",
+          "key": "bluebee_session"
+        }
+      ],
+      "destination": "/login.html",
+      "permanent": false
+    },
+    {
+      "source": "/index.html",
+      "missing": [
+        {
+          "type": "cookie",
+          "key": "bluebee_session"
+        }
+      ],
+      "destination": "/login.html",
+      "permanent": false
+    },
+    {
+      "source": "/dashboard.html",
+      "missing": [
+        {
+          "type": "cookie",
+          "key": "bluebee_session"
+        }
+      ],
+      "destination": "/login.html",
+      "permanent": false
+    },
+    {
+      "source": "/posts.html",
+      "missing": [
+        {
+          "type": "cookie",
+          "key": "bluebee_session"
+        }
+      ],
+      "destination": "/login.html",
+      "permanent": false
+    }
   ]
 }
