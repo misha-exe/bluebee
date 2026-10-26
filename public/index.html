@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Composer · Bluebee</title>
+  <style>html.auth-pending body{visibility:hidden}</style>
+  <script src="/assets/auth-guard.js"></script>
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body class="dashboard-body">
@@ -28,7 +30,7 @@
           <strong>Rudith</strong>
           <small>Editor</small>
         </div>
-        <a href="#" title="Log out">↗</a>
+        <a href="#" id="logoutLink" title="Log out" aria-label="Log out">↗</a>
       </div>
     </aside>
 
