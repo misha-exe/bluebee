@@ -488,19 +488,24 @@ class TwitterClient {
       const url = `${host}/i/api/graphql/${queryId}/CreateTweet`;
       try {
         const gqlRes = await axios.post(url, graphqlPayload, { headers: gqlHeaders, timeout: 30000 });
-        const result = gqlRes.data?.data?.create_tweet?.tweet_results?.result;
+        const data = gqlRes.data;
+        const result = data?.data?.create_tweet?.tweet_results?.result;
         const postId = result?.rest_id || result?.tweet?.rest_id;
-        if (postId) return { success: true, postId, cardUri: card.card_uri };
-        if (gqlRes.data?.errors?.length) {
-          throw new Error(gqlRes.data.errors[0]?.message || 'GraphQL mutation returned errors.');
-        }
-        return { success: true, raw: gqlRes.data, cardUri: card.card_uri };
+        if (postId && /^\d+$/.test(String(postId))) return { success: true, postId: String(postId), cardUri: card.card_uri };
+
+        // HTTP 200 but no post id: X did NOT confirm a post. Never report this as success.
+        console.error('[Publish] CreateTweet returned no post id:', JSON.stringify(data).slice(0, 1000));
+        const noId = new Error(
+          data?.errors?.[0]?.message || 'X accepted the request but did not create a post. Please try again.'
+        );
+        noId.noRetry = true;   // don't try the second host: the first call may still have gone through
+        throw noId;
       } catch (e) {
         lastError = e;
         const status = e.response?.status;
         const body = JSON.stringify(e.response?.data || e.message).slice(0, 300);
         console.warn(`[GraphQL] CreateTweet via ${host} failed: HTTP ${status || 'n/a'} — ${body}`);
-        if (status && status !== 404) break;
+        if (e.noRetry || (status && status !== 404)) break;
       }
     }
 
