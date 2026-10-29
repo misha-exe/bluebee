@@ -254,8 +254,9 @@ router.post('/publish', async (req, res) => {
     console.log('[Publish] Creating Video Website Card and posting...');
     const result = await client.postTweet(postText, mediaId, String(websiteUrl).trim(), headline);
 
-    const postId = result.postId && /^\d+$/.test(String(result.postId)) ? String(result.postId) : null;
-    const postUrl = postId ? `https://x.com/i/status/${postId}` : null;
+    const postId = result && result.postId && /^\d+$/.test(String(result.postId)) ? String(result.postId) : null;
+    if (!postId) throw new Error('X did not confirm the post was created. Please try again.');
+    const postUrl = `https://x.com/i/status/${postId}`;
     await logAttempt({ ...base, status: 'published', postId, postUrl });
 
     return res.json({
@@ -341,3 +342,4 @@ app.use('/api', router);
 app.use('/', router);
 
 module.exports = app;
+      
