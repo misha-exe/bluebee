@@ -326,8 +326,8 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       const data = await parseResponse(res);
-      const link = data.postUrl ? { href: data.postUrl, text: 'View Post' } : null;
-      showToast(data.message || 'Website Card posted successfully!', false, link);
+      if (!data.postUrl) throw new Error('X did not confirm the post. Nothing was published; please try again.');
+      showToast(data.message || 'Website Card posted successfully!', false, { href: data.postUrl, text: 'View Post' });
 
       // Clear ONLY the post text and the selected media. Headline and website URL stay for the next post.
       postText.value = '';
